@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# PERSONAL FINANCIAL DATA — never commit. This repo is PUBLIC.
+# Sportsbook exports and the local warehouse contain a complete record of
+# personal betting activity. Git history is permanent and forks cannot be
+# recalled: a single accidental commit is an irreversible disclosure.
+# ---------------------------------------------------------------------------
+data/
+exports/
+samples/
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.ofx
+*.qfx
+
+# Redacted fixtures are the ONLY tabular data allowed in the repo. They live in
+# tests/fixtures/ and must contain no real account ids, balances, or stakes.
+!tests/fixtures/**/*.csv
+!tests/fixtures/**/*.xlsx
+!tests/fixtures/**/*.pdf
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+config.toml
+secrets.toml
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
