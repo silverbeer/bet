@@ -93,6 +93,33 @@ Recommended delivery sequence within the MVP:
 
 ## 2. Multi-user, ownership, and shared intelligence
 
+> **Status: mostly DEFERRED (SB-686).** Only the ownership columns described
+> immediately below are built. Everything from "New entities" onward is design
+> intent for a product that does not exist yet, retained for reference.
+>
+> **Trigger to revisit: a real second user.** Not a hypothetical one, not a
+> planned one — an actual second person with actual bets in an actual database.
+>
+> `ARCHITECTURE.md` describes BET as a single-user product. That is correct and
+> is not in conflict with this section: **single-user product, multi-user
+> schema.**
+
+**What is built now:** `tenant_id` and `user_id` on every owned record, from
+migration 1, and the ownership chain `Tenant -> User -> SportsbookAccount ->
+Bet`. Two columns are cheap now and expensive to retrofit, and one person
+routinely owns several sportsbook accounts, so the chain earns its place
+immediately.
+
+**What is not built:** `DataConsent`, `SharingPolicy`, `FollowRelationship`, and
+`BenchmarkCohort`. Privacy-safe aggregate cohorts need 20+ users plus sufficient
+bet volume; there is one user. Building consent machinery for a population of
+one produces untested code guarding nothing.
+
+The remainder of this section is retained as the design to return to when the
+trigger condition is met.
+
+---
+
 BET begins as a local deployment for Tom, but the model must be multi-user from the first migration. Tom may own five or more sportsbook accounts. Future users, such as Jim, may follow one another and opt into aggregate learning.
 
 ### Ownership model
@@ -193,13 +220,26 @@ Supporting entities include `League`, `Venue`, `EventParticipant`, `SourceFile`,
 
 **Financial definitions**
 
+> **Superseded by [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md) (SB-683), which is
+> authoritative for the money model.** This block previously used three names
+> for one quantity — `net_profit`, `net_cash_profit`, and
+> `realized_cash_return - realized_cash_cost` — and stated `economic_roi`
+> without defining either of its terms.
+
 ```text
-net_profit = realized_cash_return - realized_cash_cost
-cash_roi = net_cash_profit / cash_stake
-economic_roi = economic_net_value / economic_risk
+net_profit   = cash_returned - cash_staked
+
+cash_roi     = sum(net_profit) / sum(cash_staked)
+               over bets with cash_staked > 0 and result != 'void'
+
+economic_roi = sum(net_profit + free_bet_winnings + rewards_earned)
+               / sum(cash_staked)
 ```
 
-Free bets, boosts, insurance, and bonus stakes must be represented explicitly and never silently treated as ordinary cash stake.
+`net_profit` is the one canonical name. Pushes count in the ROI denominator;
+voids do not. Free bets are excluded from `cash_roi` entirely.
+
+Free bets, boosts, insurance, and bonus stakes must be represented explicitly and never silently treated as ordinary cash stake. See the data dictionary for the settlement vocabulary, promotion economics, operator field traps, and worked examples.
 
 ### Relationships
 

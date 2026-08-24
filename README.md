@@ -19,6 +19,8 @@ Pre-implementation. The repository currently contains planning documents only.
 - [`docs/PRD.md`](docs/PRD.md) — product vision and the questions BET must answer
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — technical architecture
 - [`docs/BET_IMPLEMENTATION_PLAN.md`](docs/BET_IMPLEMENTATION_PLAN.md) — domain model, milestones, task breakdown
+- [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) — the money model: settlement vocabulary, promotion economics, ROI formulas
+- [`docs/decisions/`](docs/decisions/) — architecture decision records
 
 ## License
 
