@@ -1,0 +1,72 @@
+[project]
+name = "bet"
+version = "0.1.0"
+description = "Personal betting intelligence platform — transform betting history into betting intelligence."
+readme = "README.md"
+requires-python = ">=3.14"
+license = { file = "LICENSE.md" }
+authors = [{ name = "Tom Drake" }]
+keywords = ["betting", "analytics", "duckdb", "cli"]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial",
+]
+
+dependencies = [
+    "typer>=0.15",
+    "rich>=13.9",
+    "pydantic>=2.10",
+    # Pinned to the 1.5 line: DuckDB 2.0 is an alpha with an unfinalised
+    # storage format. See docs/decisions/0001-duckdb-version.md.
+    "duckdb>=1.5.5,<2",
+    # Required to read TIMESTAMPTZ values into Python; BET stores
+    # timezone-aware timestamps throughout. See docs/DATA_DICTIONARY.md.
+    "pytz>=2025.1",
+    "pandas>=2.2",
+    "pyarrow>=18.0",
+    "structlog>=24.4",
+]
+
+[project.scripts]
+bet = "bet.cli.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pandas-stubs>=2.2",
+    "types-pytz>=2025.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bet"]
+
+[tool.uv]
+# DuckDB 2.0 is evaluated by a dedicated non-blocking CI job (SB-814), never
+# by resolving prereleases here.
+prerelease = "disallow"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"

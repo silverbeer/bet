@@ -206,7 +206,11 @@ The architecture must allow additional sportsbooks to be added later.
 
 ## Language
 
-Python 3.13+
+Python 3.14+
+
+Pinned to 3.14 in `.python-version`. BET is a single-user local-first product,
+so there is no environment outside the author's to support; declaring a lower
+floor would mean shipping a version nothing is actually tested on.
 
 ## Package Management
 
