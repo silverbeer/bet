@@ -20,6 +20,7 @@ Pre-implementation. The repository currently contains planning documents only.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — technical architecture
 - [`docs/BET_IMPLEMENTATION_PLAN.md`](docs/BET_IMPLEMENTATION_PLAN.md) — domain model, milestones, task breakdown
 - [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) — the money model: settlement vocabulary, promotion economics, ROI formulas
+- [`docs/OWNERSHIP.md`](docs/OWNERSHIP.md) — tenant/user column conventions and the scoped-repository rule
 - [`docs/decisions/`](docs/decisions/) — architecture decision records
 
 ## License
