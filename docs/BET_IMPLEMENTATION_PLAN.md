@@ -134,7 +134,15 @@ All user-owned records include `user_id`. In a future hosted deployment, all ten
 
 ### Future service boundary
 
-DuckDB remains appropriate for local data and analytical workloads. A hosted service will introduce a transactional database/service for identity, authorization, consent, concurrent writes, and social relationships. The analytical warehouse receives only appropriately scoped data.
+DuckDB remains appropriate for local data and analytical workloads.
+
+**Whether a hosted deployment needs a second engine is an open question, not a settled one.** This document previously asserted that a hosted service would introduce a separate transactional database for identity, authorization, consent, concurrent writes, and social relationships. That assertion rested on DuckDB being single-process and embedded.
+
+DuckDB's Quack client/server protocol undercuts that premise: it supports multiple concurrent writers with pluggable authentication and authorization callbacks. Its stated limitations — localhost binding by default, no SSL by default, and throughput around 5,400 txn/s — are not obviously disqualifying at BET's scale.
+
+Quack's production release is scheduled alongside DuckDB 2.0 in autumn 2026, so this cannot be decided yet. **Trigger for revisiting: DuckDB 2.0 GA.** See [ADR 0001](decisions/0001-duckdb-version.md).
+
+Whichever way it resolves, `tenant_id` and `user_id` on user-owned records (SB-687) are correct under both outcomes and cheap to add now. The analytical warehouse receives only appropriately scoped data.
 
 ## 3. Domain model design
 
@@ -313,8 +321,9 @@ For expensive recurring work, create refreshable derived tables such as daily ro
 ### Partitioning and retention
 
 - Keep authoritative canonical tables in the local DuckDB database.
+- Pin the on-disk storage format explicitly — `ATTACH 'bet.duckdb' (STORAGE_VERSION 'v1.5.0')` — so the format BET writes is a deliberate choice recorded in code rather than a library default that drifts on upgrade. See [ADR 0001](decisions/0001-duckdb-version.md).
 - Retain original source files unchanged with hashes, source metadata, and import-run linkage.
-- Store high-volume raw extracts and future market snapshots as Parquet, partitioned by source system, sport/league where useful, and year/month.
+- **Keep raw extracts in DuckDB alongside canonical data. Do not build a Parquet offload.** An earlier version of this document called for storing high-volume raw extracts and future market snapshots as Parquet, partitioned by source system, sport/league, and year/month. No such volume exists, and none is on the path to recording bets and reporting ROI. Revisit only if market snapshots (M8) create real volume.
 - Avoid premature partitioning of personal canonical bet tables; expected volume does not justify it.
 - Retain canonical bets, raw evidence, and import audit data indefinitely by default.
 - Permit explicit retention policies only for high-volume raw market snapshots.

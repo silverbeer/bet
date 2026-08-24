@@ -220,7 +220,12 @@ Data Models:
 - Pydantic v2
 
 Database:
-- DuckDB
+- DuckDB 1.5.x (currently 1.5.5)
+- Storage format pinned explicitly to `v1.5.0`
+- Not DuckDB 2.0 — it is an alpha with an unfinalised storage format. See [ADR 0001](decisions/0001-duckdb-version.md).
+
+Timezones:
+- pytz (required to read `TIMESTAMPTZ` values into Python)
 
 Data Processing:
 - Pandas
@@ -253,9 +258,13 @@ bet/
 │       ├── agents/
 │       └── services/
 ├── tests/
-├── docs/
-└── data/
+└── docs/
 ```
+
+There is deliberately **no `data/` directory in the working tree.** All data —
+the DuckDB warehouse, imported sportsbook exports, backups — lives outside the
+repository under XDG paths. See the Data locations section of `README.md`; this
+is structural, not a convention.
 
 ---
 
