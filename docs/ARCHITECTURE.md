@@ -93,7 +93,22 @@ Provide decision support using historical betting performance, market data, and 
 
 # User Profile
 
-Single-user platform.
+**Single-user product, multi-user schema.**
+
+BET serves one person. There is no login, no sharing, no social feature, and no
+second user on the roadmap as a commitment.
+
+The *schema* is nonetheless multi-user from the first migration: `tenant_id` and
+`user_id` are carried on every owned record. Those two columns are cheap to add
+now and expensive to retrofit later, and one person routinely owns several
+sportsbook accounts, so the ownership chain
+`Tenant -> User -> SportsbookAccount -> Bet` is needed regardless.
+
+Everything else multi-user — `DataConsent`, `SharingPolicy`,
+`FollowRelationship`, `BenchmarkCohort` — is **deferred and not built**.
+Privacy-safe aggregate cohorts require 20+ users; there is one. See
+`BET_IMPLEMENTATION_PLAN.md` section 2 for the deferral and its trigger
+condition.
 
 Technical user.
 
