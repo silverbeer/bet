@@ -106,7 +106,8 @@ Recommended delivery sequence within the MVP:
 
 **What is built now:** `tenant_id` and `user_id` on every owned record, from
 migration 1, and the ownership chain `Tenant -> User -> SportsbookAccount ->
-Bet`. Two columns are cheap now and expensive to retrofit, and one person
+Bet`. The column conventions, table classification, identifier strategy and
+scoped-repository rule are specified in [`OWNERSHIP.md`](OWNERSHIP.md) (SB-687). Two columns are cheap now and expensive to retrofit, and one person
 routinely owns several sportsbook accounts, so the chain earns its place
 immediately.
 
