@@ -1,0 +1,59 @@
+# Quality gates that run before a commit is created.
+#
+# Install once per clone:  uv run pre-commit install
+#
+# Every project tool runs through `uv run` rather than pre-commit's isolated
+# environments, so the versions here are exactly the ones in pyproject.toml's
+# dev group. One source of truth for tool versions, no drift between a local
+# commit and CI.
+default_install_hook_types: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: [--maxkb=512]
+
+  - repo: local
+    hooks:
+      # The most important hook here. This repository is public and a leak of
+      # betting data cannot be undone. It runs on every commit regardless of
+      # which files changed. CI re-runs it over the whole PR range, so
+      # --no-verify buys nothing.
+      - id: no-personal-data
+        name: no personal betting or financial data
+        entry: scripts/check-no-personal-data.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+
+      - id: ruff-check
+        name: ruff (lint)
+        entry: uv run ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff (format)
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: mypy
+        name: mypy (strict)
+        entry: uv run mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true

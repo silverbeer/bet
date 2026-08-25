@@ -1,6 +1,6 @@
 # BET Implementation Plan
 
-**Status:** Draft for architectural review  
+**Status:** Draft for architectural review
 **Scope:** Planning only; this document authorizes no implementation work.
 
 ## 1. Product and architecture review
@@ -841,4 +841,3 @@ Implementation should not start until these are approved:
 3. Representative sportsbook export samples and supported-format boundaries.
 4. Statistical thresholds and recommendation language policy.
 5. The local-first to hosted-service transition boundary.
-

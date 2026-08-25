@@ -67,7 +67,19 @@ Enforcement, in layers:
 2. **`.gitignore`** covers `data/`, `exports/`, `samples/`, and every database,
    spreadsheet, statement and archive extension.
 3. **A pre-commit guard** (`scripts/check-no-personal-data.sh`) blocks the commit
-   outright if any of it is ever staged.
+   outright if any of it is ever staged. It checks two things: file paths and
+   extensions, and — because a filename says nothing about what is inside a file
+   — money-shaped figures in added lines of text files. Worked examples that
+   legitimately need amounts carry a `bet-guard: synthetic-amounts` marker, and
+   the guard reports each exemption it honours rather than skipping silently.
+4. **The same guard runs in CI** over the whole pull-request range. The local
+   hook can be skipped with `--no-verify`; the CI check cannot.
+
+Install the hook once per clone:
+
+```bash
+uv run pre-commit install
+```
 
 The single exception is `tests/fixtures/` — redacted samples only, with no real
 account identifiers, balances or stakes. Redaction is a review requirement, not

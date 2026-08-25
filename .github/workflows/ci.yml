@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: lint, typecheck, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python and dependencies
+        run: uv sync --locked
+
+      - name: ruff (lint)
+        run: uv run ruff check --output-format=github .
+
+      - name: ruff (format)
+        run: uv run ruff format --check .
+
+      - name: mypy (strict)
+        run: uv run mypy
+
+      - name: pytest
+        run: uv run pytest
+
+  no-personal-data:
+    name: no personal betting or financial data
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so the guard can diff the whole PR range, not just the tip.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The pre-commit hook can be skipped with --no-verify. This check cannot.
+      # This repository is public and a disclosure of betting data is permanent.
+      - name: Scan the pull request range
+        if: github.event_name == 'pull_request'
+        run: |
+          bash scripts/check-no-personal-data.sh \
+            --range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+
+      - name: Scan the pushed range
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: |
+          bash scripts/check-no-personal-data.sh \
+            --range "${{ github.event.before }}..${{ github.sha }}"

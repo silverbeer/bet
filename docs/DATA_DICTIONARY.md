@@ -381,6 +381,8 @@ not the canonical model. Referred to SB-689 (source cataloguing).
 
 ## 9. Worked examples
 
+<!-- bet-guard: synthetic-amounts -->
+
 **All amounts below are synthetic.** They demonstrate the arithmetic without
 placing any real stake, balance, or period total in this public repository. The
 formulas were verified against real specimens from four operators; those
