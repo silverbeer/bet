@@ -27,10 +27,11 @@ dependencies = [
     "pandas>=2.2",
     "pyarrow>=18.0",
     "structlog>=24.4",
+    "tomli-w>=1.2.0",
 ]
 
 [project.scripts]
-bet = "bet.cli.main:app"
+bet = "bet.cli.main:run"
 
 [dependency-groups]
 dev = [
