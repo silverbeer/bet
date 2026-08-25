@@ -11,9 +11,17 @@ from bet.cli.commands.doctor import Status, run_checks
 from bet.config import resolve
 
 
-def _checks(env: dict[str, str], tmp_path: Path) -> dict[str, tuple[Status, str]]:
+def _checks(
+    env: dict[str, str], tmp_path: Path, cwd: Path | None = None
+) -> dict[str, tuple[Status, str]]:
+    """Run the checks from a neutral directory unless one is given.
+
+    Passing cwd explicitly keeps these tests independent of where pytest runs,
+    which is what broke them on CI: the checkout there has no pre-commit hook.
+    """
     resolved = resolve(config_path=tmp_path / "missing.toml", env=env)
-    return {c.name: (c.status, c.detail) for c in run_checks(resolved).checks}
+    report = run_checks(resolved, cwd=cwd if cwd is not None else tmp_path)
+    return {c.name: (c.status, c.detail) for c in report.checks}
 
 
 @pytest.fixture
@@ -60,7 +68,7 @@ def test_a_report_with_a_failure_is_marked_failed(healthy: dict[str, str], tmp_p
     data.chmod(0o500)
     try:
         resolved = resolve(config_path=tmp_path / "missing.toml", env=healthy)
-        report = run_checks(resolved)
+        report = run_checks(resolved, cwd=tmp_path)
     finally:
         data.chmod(0o700)
     assert report.failed
@@ -68,7 +76,7 @@ def test_a_report_with_a_failure_is_marked_failed(healthy: dict[str, str], tmp_p
 
 def test_a_healthy_report_is_not_marked_failed(healthy: dict[str, str], tmp_path: Path) -> None:
     resolved = resolve(config_path=tmp_path / "missing.toml", env=healthy)
-    assert not run_checks(resolved).failed
+    assert not run_checks(resolved, cwd=tmp_path).failed
 
 
 def test_reports_a_real_database(healthy: dict[str, str], tmp_path: Path) -> None:
@@ -88,20 +96,41 @@ def test_reports_a_corrupt_database_as_failed(healthy: dict[str, str], tmp_path:
     assert status is Status.FAIL
 
 
-def test_detects_a_missing_pre_commit_hook(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, healthy: dict[str, str]
-) -> None:
+def test_detects_a_missing_pre_commit_hook(tmp_path: Path, healthy: dict[str, str]) -> None:
     """A BET checkout without the guard installed is one commit from disclosure."""
     repo = tmp_path / "clone"
     (repo / "scripts").mkdir(parents=True)
     (repo / "scripts" / "check-no-personal-data.sh").write_text("#!/bin/sh\n")
     subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
     (repo / ".git" / "hooks" / "pre-commit").unlink(missing_ok=True)
-    monkeypatch.chdir(repo)
 
-    status, detail = _checks(healthy, tmp_path)["pre-commit guard"]
-    assert status is Status.FAIL
+    status, detail = _checks(healthy, tmp_path, cwd=repo)["pre-commit guard"]
+    assert status is Status.WARN
     assert "not installed" in detail
+
+
+def test_a_missing_hook_does_not_fail_the_report(tmp_path: Path, healthy: dict[str, str]) -> None:
+    """Severity is a warning: doctor must not exit non-zero because of the cwd."""
+    repo = tmp_path / "clone"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "check-no-personal-data.sh").write_text("#!/bin/sh\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / ".git" / "hooks" / "pre-commit").unlink(missing_ok=True)
+
+    resolved = resolve(config_path=tmp_path / "missing.toml", env=healthy)
+    assert not run_checks(resolved, cwd=repo).failed
+
+
+def test_detects_an_installed_pre_commit_hook(tmp_path: Path, healthy: dict[str, str]) -> None:
+    repo = tmp_path / "clone"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "check-no-personal-data.sh").write_text("#!/bin/sh\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / ".git" / "hooks").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\n")
+
+    status, _ = _checks(healthy, tmp_path, cwd=repo)["pre-commit guard"]
+    assert status is Status.PASS
 
 
 def test_doctor_command_renders_and_succeeds_when_healthy(

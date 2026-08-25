@@ -149,20 +149,24 @@ def _source_archive(config: ResolvedConfig) -> Check:
     return Check("source archive", Status.PASS, f"{count} archived file(s) in {archive}")
 
 
-def _pre_commit_hook() -> Check:
+def _pre_commit_hook(cwd: Path) -> Check:
     """Report whether the personal-data guard is installed in this clone.
 
     Only meaningful when run from a checkout of BET itself. A developer machine
     without the hook is one `git commit` away from publishing betting data.
+
+    Reported as a warning rather than a failure. It is a property of the
+    development clone, not of the installation, and a check whose severity
+    depends on the current working directory would make `bet doctor` exit
+    non-zero in CI and in containers — which is how checks get ignored.
     """
-    repo = find_git_work_tree(Path.cwd())
+    repo = find_git_work_tree(cwd)
     if repo is None or not (repo / "scripts" / "check-no-personal-data.sh").is_file():
         return Check("pre-commit guard", Status.PASS, "not a BET checkout")
-    hook = repo / ".git" / "hooks" / "pre-commit"
-    if not hook.exists():
+    if not (repo / ".git" / "hooks" / "pre-commit").exists():
         return Check(
             "pre-commit guard",
-            Status.FAIL,
+            Status.WARN,
             "not installed in this clone",
             "Run `uv run pre-commit install`. Without it, nothing stops a commit "
             "of personal betting data, and git history is permanent.",
@@ -185,13 +189,13 @@ class _Report:
         return any(c.status is Status.FAIL for c in self.checks)
 
 
-def run_checks(config: ResolvedConfig) -> _Report:
-    """Run every check and collect the results."""
-    without_config: tuple[Callable[[], Check], ...] = (
-        _python_version,
-        _pre_commit_hook,
-        _duckdb_available,
-    )
+def run_checks(config: ResolvedConfig, *, cwd: Path | None = None) -> _Report:
+    """Run every check and collect the results.
+
+    ``cwd`` is injectable so the clone-specific check does not make the whole
+    report depend on where the process happens to be running.
+    """
+    standalone: tuple[Callable[[], Check], ...] = (_python_version, _duckdb_available)
     with_config: tuple[Callable[[ResolvedConfig], Check], ...] = (
         _data_dir_outside_git,
         _data_dir_writable,
@@ -199,7 +203,8 @@ def run_checks(config: ResolvedConfig) -> _Report:
         _schema_version,
         _source_archive,
     )
-    checks = [check() for check in without_config]
+    checks = [check() for check in standalone]
+    checks.append(_pre_commit_hook(cwd if cwd is not None else Path.cwd()))
     checks.extend(check(config) for check in with_config)
     return _Report(checks)
 
