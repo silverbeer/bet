@@ -40,6 +40,7 @@ dev = [
     "mypy>=1.13",
     "pandas-stubs>=2.2",
     "types-pytz>=2025.1",
+    "pre-commit>=4.6.2",
 ]
 
 [build-system]
@@ -69,4 +70,22 @@ files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers --strict-config"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=bet",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-fail-under=90",
+]
+
+[tool.coverage.run]
+source = ["src/bet"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
