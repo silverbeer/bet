@@ -20,6 +20,7 @@ from bet import __version__, log
 from bet.cli import tree
 from bet.cli.commands import config_cmd
 from bet.cli.commands.doctor import doctor as doctor_command
+from bet.cli.commands.init_cmd import init as init_command
 from bet.cli.context import AppContext, GlobalOptions
 from bet.config import OutputFormat, resolve
 from bet.errors import BetError
@@ -35,6 +36,7 @@ app = typer.Typer(
 DATE_FORMAT = "%Y-%m-%d"
 
 app.add_typer(config_cmd.app, name="config")
+app.command("init", help="Create the local warehouse and apply migrations.")(init_command)
 app.command("doctor", help="Check that this installation is healthy.")(doctor_command)
 tree.register(app)
 

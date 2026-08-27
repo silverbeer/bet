@@ -73,6 +73,12 @@ class Settings(BaseModel):
     state_dir: Path = Field(default_factory=default_state_dir)
 
     default_format: OutputFormat = OutputFormat.TABLE
+
+    # The on-disk format BET writes. Pinned rather than left to the library
+    # default, so it cannot drift on an upgrade. Note that DuckDB's default is
+    # *not* its own native format — see ADR 0001.
+    storage_version: str = "v1.5.0"
+
     thresholds: Thresholds = Field(default_factory=Thresholds)
 
     @model_validator(mode="after")
