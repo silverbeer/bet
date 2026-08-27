@@ -128,15 +128,65 @@ def _database(config: ResolvedConfig) -> Check:
 def _schema_version(config: ResolvedConfig) -> Check:
     """Report the applied schema version and whether migrations are pending.
 
-    The migration harness is SB-699; until it exists this reports "unknown"
-    rather than claiming a healthy schema it cannot actually verify.
+    Integrity failures — an edited or missing migration file — surface here as a
+    failed check rather than an exception, because doctor reports every problem
+    it finds instead of stopping at the first.
     """
+    from bet.database import migrator
+    from bet.database.connection import connect
+
     db_path = config.settings.db_path
     assert db_path is not None
     if not db_path.exists():
         return Check("schema version", Status.WARN, "no database yet", "Run `bet init`.")
+
+    try:
+        with connect(config.settings, create=False) as conn:
+            version = migrator.current_version(conn)
+            outstanding = migrator.pending(conn)
+    except BetError as exc:
+        return Check("schema version", Status.FAIL, exc.message, exc.remediation or "")
+    except Exception as exc:
+        return Check("schema version", Status.FAIL, str(exc), "")
+
+    label = f"{version:04d}" if version is not None else "none applied"
+    if outstanding:
+        listed = ", ".join(f"{m.version:04d}_{m.name}" for m in outstanding)
+        return Check(
+            "schema version",
+            Status.WARN,
+            f"{label}; pending: {listed}",
+            "Run `bet init` to apply pending migrations.",
+        )
+    return Check("schema version", Status.PASS, f"{label}; no pending migrations")
+
+
+def _storage_format(config: ResolvedConfig) -> Check:
+    """Compare the format on disk with the one configuration asks for.
+
+    They can legitimately differ: the pin applies only when a database is
+    created, so a warehouse made before the setting changed keeps its original
+    format. Worth reporting, not worth failing over.
+    """
+    from bet.database.connection import on_disk_storage_version
+
+    db_path = config.settings.db_path
+    assert db_path is not None
+    if not db_path.exists():
+        return Check("storage format", Status.WARN, "no database yet", "Run `bet init`.")
+
+    actual = on_disk_storage_version(db_path)
+    if actual is None:
+        return Check(
+            "storage format",
+            Status.FAIL,
+            f"{db_path} is not a DuckDB database",
+            "Restore from a backup in the backup directory.",
+        )
     return Check(
-        "schema version", Status.WARN, "not yet tracked", "Migration tracking arrives with SB-699."
+        "storage format",
+        Status.PASS,
+        f"version {actual} on disk (configured pin {config.settings.storage_version})",
     )
 
 
@@ -201,6 +251,7 @@ def run_checks(config: ResolvedConfig, *, cwd: Path | None = None) -> _Report:
         _data_dir_writable,
         _database,
         _schema_version,
+        _storage_format,
         _source_archive,
     )
     checks = [check() for check in standalone]

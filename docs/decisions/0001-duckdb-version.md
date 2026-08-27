@@ -136,14 +136,36 @@ in BET to justify evaluating this. Deferred entirely.
 1. **Build on DuckDB 1.5.x**, currently 1.5.5. It is the current stable line and
    receives patch releases.
 
-2. **Pin the storage format explicitly** rather than relying on the default:
+2. **Pin the storage format explicitly** rather than relying on the default.
+   In Python this is a connection setting, applied when the file is created:
 
-   ```sql
-   ATTACH 'bet.duckdb' (STORAGE_VERSION 'v1.5.0');
+   ```python
+   duckdb.connect(path, config={"storage_compatibility_version": "v1.5.0"})
    ```
 
    An explicit pin means the format BET writes is a deliberate choice recorded
    in code, and it cannot drift when the library is upgraded.
+
+   **Amendment, 2026-08-26 (SB-699).** The pin is not belt-and-braces; it
+   changes what is written. DuckDB 1.5.5's *default* is storage version **64**
+   — the v0.9–v1.1 format — not its own native 68. Measured:
+
+   | pin | on-disk version |
+   |---|---|
+   | *(none — the default)* | 64 |
+   | `v1.2.0` | 65 |
+   | `v1.4.0` | 67 |
+   | `v1.5.0` | **68** |
+
+   DuckDB defaults to the oldest broadly-readable format so that files stay
+   openable by older clients. BET pins 68 instead, because its only access path
+   is its own CLI, which constrains `duckdb>=1.5.5,<2`; compatibility with
+   DuckDB releases older than 1.5 buys nothing here. The trade-off is real
+   though — a third-party tool bundling an older DuckDB cannot open a version-68
+   file. `storage_version` is therefore a configuration setting, not a constant,
+   and `bet doctor` reports the format actually on disk alongside the configured
+   pin, since the two legitimately differ for a warehouse created before the
+   setting changed.
 
 3. **Run the test suite against the 2.0 preview in CI**, as a second job that is
    allowed to fail without blocking:
