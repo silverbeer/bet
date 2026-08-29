@@ -190,6 +190,32 @@ def _storage_format(config: ResolvedConfig) -> Check:
     )
 
 
+def _local_identity(config: ResolvedConfig) -> Check:
+    """Check the warehouse has a local user, and that config agrees with it.
+
+    A stale config against a restored backup would otherwise make every command
+    run as a user that does not exist — returning an empty warehouse rather than
+    an error, which is the worst possible failure for an analytics tool.
+    """
+    from bet.database import identity
+    from bet.database.connection import connect
+
+    db_path = config.settings.db_path
+    assert db_path is not None
+    if not db_path.exists():
+        return Check("local identity", Status.WARN, "no database yet", "Run `bet init`.")
+
+    try:
+        with connect(config.settings, create=False) as conn:
+            scope = identity.resolve_scope(conn, config)
+    except BetError as exc:
+        return Check("local identity", Status.FAIL, exc.message, exc.remediation or "")
+    except Exception as exc:
+        return Check("local identity", Status.FAIL, str(exc), "")
+
+    return Check("local identity", Status.PASS, f"user {scope.user_id}")
+
+
 def _source_archive(config: ResolvedConfig) -> Check:
     archive = config.settings.source_archive_dir
     assert archive is not None
@@ -252,6 +278,7 @@ def run_checks(config: ResolvedConfig, *, cwd: Path | None = None) -> _Report:
         _database,
         _schema_version,
         _storage_format,
+        _local_identity,
         _source_archive,
     )
     checks = [check() for check in standalone]

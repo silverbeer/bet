@@ -7,7 +7,7 @@ import typer
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve, write_config
-from bet.database import migrator
+from bet.database import identity, migrator
 from bet.database.connection import connect, on_disk_storage_version
 
 
@@ -49,6 +49,11 @@ def init(ctx: typer.Context) -> None:
         pending_before = len(migrator.pending(conn))
         applied = migrator.apply(conn)
         version = migrator.current_version(conn)
+        scope_existed = identity.existing_scope(conn) is not None
+        scope = identity.bootstrap(conn)
+
+    if not scope_existed:
+        identity.record_in_config(resolved, scope)
 
     created.append(
         {
@@ -71,6 +76,14 @@ def init(ctx: typer.Context) -> None:
             "action": (
                 f"applied {len(applied)} of {pending_before} pending" if applied else "up to date"
             ),
+        }
+    )
+
+    created.append(
+        {
+            "item": "local user",
+            "path": str(scope.user_id),
+            "action": "already present" if scope_existed else "created",
         }
     )
 
