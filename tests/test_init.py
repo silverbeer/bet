@@ -127,31 +127,29 @@ def test_doctor_warns_before_init(clean: Path) -> None:
     assert checks["storage format"]["status"] == "warn"
 
 
-def test_doctor_reports_tampering_as_a_failure_rather_than_crashing(
-    clean: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """An edited migration must be reported alongside the other checks."""
-    runner.invoke(app, ["init"])
+def test_doctor_reports_tampering_as_a_failure_rather_than_crashing(clean: Path) -> None:
+    """An edited migration must be reported alongside the other checks.
 
-    fake_dir = tmp_path / "migrations"
-    fake_dir.mkdir()
-    (fake_dir / "0001_ghost.sql").write_text("SELECT 1;")
+    Simulated by corrupting the stored checksum rather than editing a shipped
+    migration file, which would break every other test in the suite. The runner
+    compares the two, so either side changing produces the same failure.
+    """
+    runner.invoke(app, ["init"])
 
     import duckdb
 
     conn = duckdb.connect(str(clean / "bet.duckdb"))
     conn.execute(
-        "INSERT INTO control.migration VALUES (1, 'ghost', 'a-checksum-that-will-not-match', "
-        "now(), 0)"
+        "UPDATE control.migration SET checksum = 'a-checksum-that-will-not-match' WHERE version = 1"
     )
     conn.close()
-
-    monkeypatch.setattr("bet.database.migrator.MIGRATIONS_DIR", fake_dir)
 
     result = runner.invoke(app, ["--format", "json", "doctor"])
     checks = {c["check"]: c for c in json.loads(result.stdout)}
     assert checks["schema version"]["status"] == "fail"
     assert "modified after it was applied" in checks["schema version"]["detail"]
+    # Other checks still ran: doctor reports everything, not just the first fault.
+    assert checks["python version"]["status"] == "pass"
 
 
 def test_doctor_reports_a_corrupt_file_as_a_storage_format_failure(clean: Path) -> None:
