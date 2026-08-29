@@ -14,7 +14,54 @@ prediction engine. It analyzes what already happened.
 
 ## Status
 
-Pre-implementation. The repository currently contains planning documents only.
+Early. The warehouse exists and the CLI runs; **no bets can be recorded yet.**
+
+Working today:
+
+- `bet init` — creates the local warehouse, applies migrations, seeds the
+  controlled taxonomies
+- `bet doctor` — checks Python, data locations, database, schema version and
+  storage format, with remediation for each
+- `bet config show | set | path` — layered configuration reporting the source of
+  every value
+
+Not yet: recording bets, importing sportsbook exports, and every analytic that
+depends on them. `bet --help` lists the full planned command tree; unimplemented
+commands name the ticket that will build them.
+
+## Install
+
+```bash
+uv tool install --editable .    # puts `bet` on your PATH
+bet --version
+```
+
+Editable, so the installed command runs this working tree — code changes take
+effect with no reinstall. `uv tool uninstall bet` removes it. Without
+installing, `uv run bet ...` works from inside the repository.
+
+Development setup also needs the pre-commit hooks, which is what stops personal
+betting data reaching this public repository:
+
+```bash
+uv sync
+uv run pre-commit install
+```
+
+## Quickstart
+
+```bash
+bet config set data_dir /somewhere/outside/any/git/repo   # optional; see below
+bet init
+bet doctor
+```
+
+**Choose `data_dir` before running `bet init`** — it decides where the permanent
+warehouse lives, and moving it later means moving the database and the source
+archive with it. The default is `~/.local/share/bet`. Any path inside a git work
+tree is refused outright.
+
+## Planning documents
 
 - [`docs/PRD.md`](docs/PRD.md) — product vision and the questions BET must answer
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — technical architecture
