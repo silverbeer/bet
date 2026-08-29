@@ -159,3 +159,53 @@ def test_doctor_reports_a_corrupt_file_as_a_storage_format_failure(clean: Path) 
     result = runner.invoke(app, ["--format", "json", "doctor"])
     checks = {c["check"]: c for c in json.loads(result.stdout)}
     assert checks["storage format"]["status"] == "fail"
+
+
+def test_init_bootstraps_a_local_user(clean: Path) -> None:
+    result = runner.invoke(app, ["--format", "json", "init"])
+    assert result.exit_code == 0, result.output
+    assert rows(result.stdout)["local user"]["action"] == "created"
+
+
+def test_init_records_the_identity_in_config(clean: Path) -> None:
+    """Later commands must run as the same user, not mint a new one."""
+    import tomllib
+
+    runner.invoke(app, ["init"])
+    path = Path(runner.invoke(app, ["config", "path"]).stdout.strip())
+    with path.open("rb") as handle:
+        stored = tomllib.load(handle)
+    assert "tenant_id" in stored
+    assert "user_id" in stored
+
+
+def test_re_running_init_does_not_create_a_second_user(clean: Path) -> None:
+    """A second user would own bets invisible to the first."""
+    first = rows(runner.invoke(app, ["--format", "json", "init"]).stdout)
+    second = rows(runner.invoke(app, ["--format", "json", "init"]).stdout)
+
+    assert second["local user"]["action"] == "already present"
+    assert first["local user"]["path"] == second["local user"]["path"]
+
+
+def test_doctor_reports_the_local_identity(clean: Path) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["--format", "json", "doctor"])
+    checks = {c["check"]: c for c in json.loads(result.stdout)}
+    assert checks["local identity"]["status"] == "pass"
+
+
+def test_doctor_fails_when_config_names_a_user_the_warehouse_does_not_have(
+    clean: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restored-backup-against-stale-config case."""
+    import uuid
+
+    runner.invoke(app, ["init"])
+    monkeypatch.setenv("BET_USER_ID", str(uuid.uuid4()))
+    monkeypatch.setenv("BET_TENANT_ID", str(uuid.uuid4()))
+
+    result = runner.invoke(app, ["--format", "json", "doctor"])
+    checks = {c["check"]: c for c in json.loads(result.stdout)}
+    assert checks["local identity"]["status"] == "fail"
+    assert "stale config" in checks["local identity"]["remediation"]

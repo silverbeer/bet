@@ -73,8 +73,10 @@ def test_deferred_schemas_are_not_created(warehouse: duckdb.DuckDBPyConnection) 
 
 
 def test_migrations_are_idempotent(warehouse: duckdb.DuckDBPyConnection) -> None:
+    """Derived from the shipped set, so adding a migration does not edit this."""
+    highest = max(m.version for m in migrator.discover())
     assert migrator.apply(warehouse) == []
-    assert migrator.current_version(warehouse) == 2
+    assert migrator.current_version(warehouse) == highest
 
 
 def test_the_shipped_migrations_pass_their_own_integrity_check(

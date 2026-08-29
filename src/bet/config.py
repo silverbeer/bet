@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Self
+from uuid import UUID
 
 import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -79,6 +80,11 @@ class Settings(BaseModel):
     # *not* its own native format — see ADR 0001.
     storage_version: str = "v1.5.0"
 
+    # The local identity every command runs as, recorded by `bet init`.
+    # Absent until the warehouse is created; see bet.database.identity.
+    tenant_id: UUID | None = None
+    user_id: UUID | None = None
+
     thresholds: Thresholds = Field(default_factory=Thresholds)
 
     @model_validator(mode="after")
@@ -123,6 +129,8 @@ def _coerce(key: str, raw: str) -> Any:
     """Interpret an environment string for the field it targets."""
     if key in {"data_dir", "db_path", "source_archive_dir", "backup_dir", "state_dir"}:
         return Path(raw)
+    if key in {"tenant_id", "user_id"}:
+        return UUID(raw)
     if key == "default_format":
         return raw
     return raw
