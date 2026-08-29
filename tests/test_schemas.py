@@ -8,6 +8,7 @@ the database is where drift has to be caught.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -250,3 +251,59 @@ def test_duplicate_taxonomy_codes_are_rejected(warehouse: duckdb.DuckDBPyConnect
         warehouse.execute(
             "INSERT INTO reference.bet_status VALUES ('pending', 'Again', 'duplicate', 9)"
         )
+
+
+# ------------------------------------------------- CHECK / reference drift
+
+# DuckDB cannot create foreign keys across schemas, so core tables enforce
+# membership of the reference vocabularies with CHECK constraints that list the
+# values. That duplication is only safe if it is checked, so these assert each
+# list matches its reference table exactly, in both directions.
+#
+# Keyed by column rather than constraint name: DuckDB discards the name given in
+# the migration and auto-names CHECK constraints "<column>_check".
+CHECK_TO_REFERENCE = {
+    ("bet", "status"): "bet_status",
+    ("bet", "result"): "bet_result",
+    ("bet", "wager_kind"): "wager_kind",
+    ("bet", "settlement_source"): "settlement_source",
+    ("bet", "capture_method"): "capture_method",
+    ("bet_leg", "result"): "bet_result",
+    ("promotion", "promotion_type"): "promotion_type",
+    ("promotion", "state"): "promotion_state",
+    ("bet_promotion", "promotion_type"): "promotion_type",
+}
+
+
+def check_values(conn: duckdb.DuckDBPyConnection, table: str, column: str) -> set[str]:
+    """Extract the literal list from the CHECK (column IN (...)) on a column."""
+    rows = conn.execute(
+        "SELECT constraint_text FROM duckdb_constraints() "
+        "WHERE schema_name = 'core' AND table_name = ? AND constraint_type = 'CHECK' "
+        "AND list_contains(constraint_column_names, ?)",
+        [table, column],
+    ).fetchall()
+    for (text,) in rows:
+        inner = re.search(rf"{column} IN \(([^)]*)\)", str(text))
+        if inner:
+            return set(re.findall(r"'([a-z_]+)'", inner.group(1)))
+    raise AssertionError(f"no IN-list CHECK found on core.{table}.{column}")
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "reference"),
+    [(t, c, r) for (t, c), r in CHECK_TO_REFERENCE.items()],
+    ids=[f"{t}.{c}" for (t, c) in CHECK_TO_REFERENCE],
+)
+def test_check_constraints_match_their_reference_table(
+    warehouse: duckdb.DuckDBPyConnection, table: str, column: str, reference: str
+) -> None:
+    allowed = check_values(warehouse, table, column)
+    seeded = set(codes(warehouse, reference))
+
+    assert allowed == seeded, (
+        f"core.{table}.{column} CHECK and reference.{reference} have drifted.\n"
+        f"  CHECK allows but reference lacks: {sorted(allowed - seeded)}\n"
+        f"  reference has but CHECK rejects: {sorted(seeded - allowed)}\n"
+        "Adding a taxonomy value needs a migration that updates both."
+    )
