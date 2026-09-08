@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
@@ -138,6 +139,40 @@ class ScopedRepository[ModelT: OwnedModel]:
     def add_all(self, entities: Sequence[ModelT]) -> list[ModelT]:
         return [self.add(e) for e in entities]
 
+    def update(self, entity: ModelT) -> ModelT:
+        """Update an existing row in place, keyed by the entity's id.
+
+        Unlike ``add``, this does not create a new version. Versioned
+        corrections go through ``bets correct`` (SB-703); this is for a plain
+        mutation of the same row, such as ``bet settle`` recording a result on
+        a bet that already exists.
+
+        Generated columns (``net_profit``, ``total_risk`` on ``core.bet``)
+        never appear in the SET list: they are computed ``@property``s on the
+        model, not Pydantic fields, so ``columns()`` never sees them.
+        """
+        if entity.tenant_id != self._scope.tenant_id or entity.user_id != self._scope.user_id:
+            raise DatabaseError(
+                f"refusing to write a {self.table} row owned by a different user.",
+                remediation="Construct the entity with this repository's scope.",
+            )
+
+        values = entity.model_dump()
+        entity_id = values["id"]
+        if not self._rows("id = ?", [_as_param(entity_id)]):
+            raise NotFoundError(
+                f"no {self.table} with id {entity_id} for this user.",
+                remediation="Nothing was updated.",
+            )
+
+        columns = [c for c in self.columns() if c in values and c != "id"]
+        assignments = ", ".join(f"{c} = ?" for c in columns)
+        self._conn.execute(
+            f"UPDATE {self.table} SET {assignments} WHERE {self._scoped('id = ?')}",
+            [*(_as_param(values[c]) for c in columns), *self._scope_params(), _as_param(entity_id)],
+        )
+        return entity
+
     def delete(self, entity_id: UUID) -> int:
         """Delete within scope. Returns rows removed, so a no-op is visible."""
         before = self.count()
@@ -198,6 +233,63 @@ class BetRepository(ScopedRepository[Bet]):
             chain.append(found)
             cursor = found.supersedes_id
         return list(reversed(chain))
+
+    def search(
+        self,
+        *,
+        status: str | None = None,
+        is_open: bool = False,
+        sportsbook_code: str | None = None,
+        sport: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[Bet]:
+        """Filtered listing for ``bet list`` (SB-812).
+
+        Joins to ``sportsbook_account`` and ``bet_leg`` because sportsbook and
+        sport are not columns on ``core.bet`` itself — the only reason this
+        isn't built on the generic ``_rows`` helper, which queries one table.
+        A leg match uses EXISTS rather than a JOIN so a multi-leg bet isn't
+        duplicated once per matching leg.
+        """
+        columns = ", ".join(f"b.{c}" for c in self.columns())
+        clauses = ["b.tenant_id = ?", "b.user_id = ?", "b.is_current"]
+        params: list[Any] = [*self._scope_params()]
+
+        if status is not None:
+            clauses.append("b.status = ?")
+            params.append(status)
+        if is_open:
+            clauses.append("b.status = 'pending'")
+        if sportsbook_code is not None:
+            clauses.append("a.sportsbook_code = ?")
+            params.append(sportsbook_code)
+        if sport is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM core.bet_leg l WHERE l.tenant_id = b.tenant_id "
+                "AND l.user_id = b.user_id AND l.bet_id = b.id AND l.sport = ?)"
+            )
+            params.append(sport)
+        if since is not None:
+            clauses.append("b.placed_at >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("b.placed_at <= ?")
+            params.append(until)
+
+        sql = (
+            f"SELECT {columns} FROM core.bet b "
+            "JOIN core.sportsbook_account a ON a.tenant_id = b.tenant_id "
+            "AND a.user_id = b.user_id AND a.id = b.sportsbook_account_id "
+            f"WHERE {' AND '.join(clauses)} ORDER BY b.placed_at DESC"
+        )
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+
+        cursor = self._conn.execute(sql, params)
+        names = [d[0] for d in cursor.description or []]
+        return [self._build(dict(zip(names, row, strict=True))) for row in cursor.fetchall()]
 
     def provenance(self, bet_id: UUID) -> dict[str, Any]:
         """Where a bet came from: capture method, import run, source record, profile.

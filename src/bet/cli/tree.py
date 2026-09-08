@@ -45,7 +45,6 @@ TREE: dict[str, tuple[str, dict[str, tuple[str, str]]]] = {
     "bets": (
         "Query individual bets.",
         {
-            "list": ("List bets.", "SB-812"),
             "show": ("Show one bet in full.", "SB-745"),
             "open": ("List unsettled bets.", "SB-745"),
             "search": ("Search bets.", "SB-745"),
