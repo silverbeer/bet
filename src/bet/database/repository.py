@@ -253,6 +253,15 @@ class BetPromotionRepository(ScopedRepository[BetPromotion]):
         ]
 
 
+def known_sportsbook_codes(conn: DuckDBPyConnection) -> set[str]:
+    """The sportsbook codes seeded into ``core.sportsbook``.
+
+    Unscoped, unlike everything else here: sportsbook identity is reference
+    data keyed by a stable natural code, not owned by a tenant or user.
+    """
+    return {row[0] for row in conn.execute("SELECT code FROM core.sportsbook").fetchall()}
+
+
 OWNED_REPOSITORIES: tuple[type[ScopedRepository[Any]], ...] = (
     SportsbookAccountRepository,
     BetRepository,
@@ -316,4 +325,5 @@ __all__ = [
     "ScopedRepository",
     "SportsbookAccountRepository",
     "Warehouse",
+    "known_sportsbook_codes",
 ]
