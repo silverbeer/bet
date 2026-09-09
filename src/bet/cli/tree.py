@@ -5,7 +5,9 @@ and each command reports the ticket that will implement it. A stub that names
 its ticket is more useful than a command that does not exist: it answers "is
 this planned?" without a trip to the backlog.
 
-``config`` and ``doctor`` are real and are registered separately.
+``config``, ``doctor``, ``add``, ``list``, ``settle``, and ``bets`` (except
+its ``correct`` sub-command, still a stub here) are real and are registered
+separately.
 """
 
 from __future__ import annotations
@@ -40,15 +42,6 @@ TREE: dict[str, tuple[str, dict[str, tuple[str, str]]]] = {
             "status": ("Show per-sportsbook import status.", "SB-744"),
             "summary": ("Performance by sportsbook.", "SB-744"),
             "accounts": ("List sportsbook accounts.", "SB-701"),
-        },
-    ),
-    "bets": (
-        "Query individual bets.",
-        {
-            "show": ("Show one bet in full.", "SB-745"),
-            "open": ("List unsettled bets.", "SB-745"),
-            "search": ("Search bets.", "SB-745"),
-            "correct": ("Record a correction to a bet.", "SB-703"),
         },
     ),
     "sport": (

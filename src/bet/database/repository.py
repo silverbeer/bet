@@ -241,17 +241,24 @@ class BetRepository(ScopedRepository[Bet]):
         is_open: bool = False,
         sportsbook_code: str | None = None,
         sport: str | None = None,
+        text: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
     ) -> list[Bet]:
-        """Filtered listing for ``bet list`` (SB-812).
+        """Filtered listing for ``bet list`` (SB-812) and ``bets search`` (SB-745).
 
         Joins to ``sportsbook_account`` and ``bet_leg`` because sportsbook and
         sport are not columns on ``core.bet`` itself — the only reason this
         isn't built on the generic ``_rows`` helper, which queries one table.
         A leg match uses EXISTS rather than a JOIN so a multi-leg bet isn't
         duplicated once per matching leg.
+
+        ``text`` is a plain substring match over the leg fields that carry an
+        operator's own free-text labels (selection, market, team, player,
+        event). It is not entity resolution -- there is no controlled
+        vocabulary yet to resolve against (SB-747, SB-768) -- just a search
+        over what a screenshot or manual entry actually typed.
         """
         columns = ", ".join(f"b.{c}" for c in self.columns())
         clauses = ["b.tenant_id = ?", "b.user_id = ?", "b.is_current"]
@@ -271,6 +278,14 @@ class BetRepository(ScopedRepository[Bet]):
                 "AND l.user_id = b.user_id AND l.bet_id = b.id AND l.sport = ?)"
             )
             params.append(sport)
+        if text is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM core.bet_leg l WHERE l.tenant_id = b.tenant_id "
+                "AND l.user_id = b.user_id AND l.bet_id = b.id AND ("
+                "l.selection_name ILIKE ? OR l.market_name ILIKE ? OR "
+                "l.target_team ILIKE ? OR l.target_player ILIKE ? OR l.event_label ILIKE ?))"
+            )
+            params.extend([f"%{text}%"] * 5)
         if since is not None:
             clauses.append("b.placed_at >= ?")
             params.append(since)
