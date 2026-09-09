@@ -134,9 +134,16 @@ def test_unimplemented_command_exits_unavailable(monkeypatch: pytest.MonkeyPatch
 
 
 def test_unimplemented_subcommand_names_its_ticket() -> None:
-    result = runner.invoke(app, ["bets", "show"])
+    result = runner.invoke(app, ["strategy", "list"])
     assert isinstance(result.exception, NotImplementedYetError)
     assert "SB-" in (result.exception.remediation or "")
+
+
+def test_bets_correct_is_still_a_stub() -> None:
+    """``bets show``/``open``/``search`` are real (SB-745); ``correct`` waits on SB-703."""
+    result = runner.invoke(app, ["bets", "correct", "00000000-0000-0000-0000-000000000000"])
+    assert isinstance(result.exception, NotImplementedYetError)
+    assert "SB-703" in (result.exception.remediation or "")
 
 
 def test_data_location_error_exit_code_reaches_the_shell(

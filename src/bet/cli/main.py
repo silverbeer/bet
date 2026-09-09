@@ -18,7 +18,7 @@ from rich.console import Console
 
 from bet import __version__, log
 from bet.cli import tree
-from bet.cli.commands import config_cmd
+from bet.cli.commands import bets_cmd, config_cmd
 from bet.cli.commands.add_cmd import add as add_command
 from bet.cli.commands.doctor import doctor as doctor_command
 from bet.cli.commands.init_cmd import init as init_command
@@ -44,6 +44,7 @@ app.command("doctor", help="Check that this installation is healthy.")(doctor_co
 app.command("add", help="Record a bet the moment it is placed.")(add_command)
 app.command("list", help="List bets, newest first.")(list_command)
 app.command("settle", help="Record the outcome of a bet.")(settle_command)
+app.add_typer(bets_cmd.app, name="bets")
 tree.register(app)
 
 
