@@ -70,6 +70,7 @@ def show(ctx: typer.Context, bet_id: Annotated[str, typer.Argument(help="Bet id.
             "capture_method": bet.capture_method,
             "import_run_id": provenance["import_run_id"],
             "source_record_id": provenance["source_record_id"],
+            "source_file_id": provenance["source_file_id"],
             "profile_version": provenance["profile_version"],
             "version": bet.version,
         }
@@ -95,6 +96,7 @@ def show(ctx: typer.Context, bet_id: Annotated[str, typer.Argument(help="Bet id.
         "capture_method",
         "import_run_id",
         "source_record_id",
+        "source_file_id",
         "profile_version",
         "version",
     ]

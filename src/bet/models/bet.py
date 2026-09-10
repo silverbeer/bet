@@ -62,6 +62,7 @@ class Bet(OwnedModel, AwareTimestamps):
 
     import_run_id: UUID | None = None
     source_record_id: UUID | None = None
+    source_file_id: UUID | None = None
     profile_version: str | None = None
     capture_method: CaptureMethod = "manual"
 

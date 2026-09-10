@@ -15,6 +15,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TextIO
+from uuid import UUID
 
 from rich.console import Console
 from rich.table import Table
@@ -27,8 +28,14 @@ def _plain(value: Any) -> Any:
 
     Decimal becomes a string, not a float: money must not acquire binary
     floating-point error on the way out of the process.
+
+    UUID is here because ``bets show`` renders provenance ids straight off the
+    model. Every one of them was null until a bet could cite a source file, so
+    `--format json` raised ``TypeError`` on the first bet that carried one.
     """
     if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, UUID):
         return str(value)
     if isinstance(value, datetime | date):
         return value.isoformat()
