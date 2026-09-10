@@ -27,6 +27,7 @@ from uuid import UUID
 from bet.errors import DatabaseError, NotFoundError
 from bet.models.bet import Bet, BetLeg, BetLegGroup, BetPromotion, Promotion
 from bet.models.ownership import OwnedModel, OwnerScope, SportsbookAccount
+from bet.models.source import SourceFile
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -319,12 +320,23 @@ class BetRepository(ScopedRepository[Bet]):
             "capture_method": bet.capture_method,
             "import_run_id": bet.import_run_id,
             "source_record_id": bet.source_record_id,
+            "source_file_id": bet.source_file_id,
             "profile_version": bet.profile_version,
             "external_bet_id": bet.external_bet_id,
             "external_receipt_id": bet.external_receipt_id,
             "version": bet.version,
             "is_current": bet.is_current,
         }
+
+
+class SourceFileRepository(ScopedRepository[SourceFile]):
+    table = "control.source_file"
+    model = SourceFile
+
+    def by_digest(self, sha256: str) -> SourceFile | None:
+        """Look a file up by content, so re-archiving the same bytes is a no-op."""
+        rows = self._rows("sha256 = ?", [sha256])
+        return self._build(rows[0]) if rows else None
 
 
 class BetLegRepository(ScopedRepository[BetLeg]):
@@ -371,6 +383,7 @@ def known_sportsbook_codes(conn: DuckDBPyConnection) -> set[str]:
 
 OWNED_REPOSITORIES: tuple[type[ScopedRepository[Any]], ...] = (
     SportsbookAccountRepository,
+    SourceFileRepository,
     BetRepository,
     BetLegRepository,
     BetLegGroupRepository,
@@ -390,6 +403,7 @@ class Warehouse:
         self._conn = conn
         self._scope = scope
         self.accounts = SportsbookAccountRepository(conn, scope)
+        self.sources = SourceFileRepository(conn, scope)
         self.bets = BetRepository(conn, scope)
         self.legs = BetLegRepository(conn, scope)
         self.leg_groups = BetLegGroupRepository(conn, scope)

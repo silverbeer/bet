@@ -1,10 +1,18 @@
-"""``bet add`` — interactive manual bet entry.
+"""``bet add`` — bet entry, typed by hand or read off a captured file.
 
 The primary capture method until sportsbook exports land (SB-689): the only
 way to record a bet the moment it is placed, with no export file, scrape or
 screenshot to wait for. Writes the same ``core.bet``/``core.bet_leg`` rows an
 import would, through the same repositories, so nothing downstream can tell
 a bet was typed in rather than imported except ``capture_method``.
+
+That last clause is the whole reason ``--capture-method`` exists (SB-1049).
+The daily loop is now a photograph of a bet slip, read by an agent, written
+through these same flags — and a transcribed bet must never claim the
+precision of one a human typed while looking at the real numbers. Pass
+``--capture-method screenshot --source-file`` and the bet is tagged as
+transcribed and cites the archived image it came from. The default stays
+``manual``, so a bet typed at the counter still says so.
 
 bet-guard: synthetic-amounts
 """
@@ -14,7 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Annotated
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, get_args
 from uuid import uuid4
 
 import typer
@@ -28,8 +37,9 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse, known_sportsbook_codes
 from bet.errors import UsageError
-from bet.models.bet import Bet, BetLeg
+from bet.models.bet import Bet, BetLeg, CaptureMethod
 from bet.models.ownership import SportsbookAccount
+from bet.sources import archive as archive_source
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -38,6 +48,8 @@ console = Console()
 
 FOUR_PLACES = Decimal("0.0001")
 TWO_PLACES = Decimal("0.01")
+
+CAPTURE_METHODS: tuple[str, ...] = get_args(CaptureMethod)
 
 
 # ---------------------------------------------------------------- odds math
@@ -114,6 +126,50 @@ def _parse_placed_at(raw: str | None) -> datetime:
             remediation="Use ISO 8601, e.g. 2026-09-08T19:30:00-04:00.",
         ) from exc
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _parse_capture_method(raw: str) -> CaptureMethod:
+    value = raw.strip().lower()
+    if value not in CAPTURE_METHODS:
+        raise UsageError(
+            f"{raw!r} is not a known capture method.",
+            remediation="Known methods: " + ", ".join(sorted(CAPTURE_METHODS)),
+        )
+    return value  # type: ignore[return-value]
+
+
+def _check_provenance(capture_method: CaptureMethod, source_file: Path | None) -> None:
+    """Refuse the incoherent combination; warn about the merely incomplete one.
+
+    ``manual`` means a human typed the numbers. A file it was captured from is
+    a contradiction, not extra detail, so it is an error rather than something
+    to quietly accept.
+
+    A path that is not a file fails here too, before the warehouse is opened
+    and before any prompting, rather than from inside the write transaction
+    where it would surface as a rollback rather than as bad input.
+
+    The reverse — a transcribed bet with nothing archived — is a real loss but
+    not a contradiction: the screenshot may genuinely be gone. It warns, so the
+    bet is still recorded and the gap is visible, because refusing it would
+    cost the bet as well as the evidence.
+    """
+    if source_file is not None and capture_method == "manual":
+        raise UsageError(
+            "--source-file contradicts --capture-method manual.",
+            remediation="A manually typed bet was not captured from a file. Pass "
+            "--capture-method screenshot (or pdf, statement, export) alongside it.",
+        )
+    if source_file is not None and not source_file.expanduser().is_file():
+        raise UsageError(
+            f"{source_file} is not a file.",
+            remediation="Pass --source-file the path to the screenshot or statement.",
+        )
+    if source_file is None and capture_method != "manual":
+        console.print(
+            f"[yellow]Warning:[/yellow] recording a {capture_method} bet with no --source-file. "
+            "Nothing will be archived, so these figures cannot be checked against their source."
+        )
 
 
 # --------------------------------------------------------------- leg parsing
@@ -276,6 +332,7 @@ def _build_from_flags(
     stake: str | None,
     bonus_stake: str | None,
     placed_at: str | None,
+    capture_method: CaptureMethod,
 ) -> _Draft:
     if not sportsbook:
         raise UsageError("--sportsbook is required with --non-interactive.")
@@ -311,7 +368,7 @@ def _build_from_flags(
         user_id=w.scope.user_id,
         id=bet_id,
         sportsbook_account_id=account.id,
-        capture_method="manual",
+        capture_method=capture_method,
         placed_at=_parse_placed_at(placed_at),
         wager_kind="parlay" if len(legs) > 1 else "straight",
         cash_staked=cash_staked,
@@ -323,7 +380,11 @@ def _build_from_flags(
 
 
 def _build_interactively(
-    w: Warehouse, conn: DuckDBPyConnection, *, placed_at: str | None
+    w: Warehouse,
+    conn: DuckDBPyConnection,
+    *,
+    placed_at: str | None,
+    capture_method: CaptureMethod,
 ) -> _Draft | None:
     default_sportsbook, default_sport = _recall_defaults(w)
 
@@ -386,7 +447,7 @@ def _build_interactively(
         user_id=w.scope.user_id,
         id=bet_id,
         sportsbook_account_id=account.id,
-        capture_method="manual",
+        capture_method=capture_method,
         placed_at=_parse_placed_at(placed_at),
         wager_kind="parlay" if len(legs) > 1 else "straight",
         cash_staked=cash_staked,
@@ -406,6 +467,8 @@ def _summary_row(bet: Bet, legs: list[BetLeg]) -> dict[str, object]:
         "cash_staked": bet.cash_staked,
         "bonus_staked": bet.bonus_staked,
         "status": bet.status,
+        "capture_method": bet.capture_method,
+        "source_file_id": str(bet.source_file_id) if bet.source_file_id else None,
     }
 
 
@@ -443,10 +506,29 @@ def add(
         str | None,
         typer.Option("--placed-at", help="ISO 8601 timestamp the bet was placed. Default: now."),
     ] = None,
+    capture_method: Annotated[
+        str,
+        typer.Option(
+            "--capture-method",
+            help="How these numbers were obtained: manual (typed by a human), screenshot, "
+            "pdf, statement, export or api. Anything but manual marks the bet transcribed.",
+        ),
+    ] = "manual",
+    source_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--source-file",
+            help="The screenshot or statement this bet was read from. Archived unchanged "
+            "and cited by the bet. Requires a non-manual --capture-method.",
+        ),
+    ] = None,
 ) -> None:
     """Record a bet the moment it is placed."""
     resolved = resolve()
     fmt = options_from(ctx).fmt
+
+    method = _parse_capture_method(capture_method)
+    _check_provenance(method, source_file)
 
     with connect(resolved.settings) as conn:
         scope = identity.resolve_scope(conn, resolved)
@@ -462,15 +544,28 @@ def add(
                 stake=stake,
                 bonus_stake=bonus_stake,
                 placed_at=placed_at,
+                capture_method=method,
             )
         else:
-            draft = _build_interactively(w, conn, placed_at=placed_at)
+            draft = _build_interactively(w, conn, placed_at=placed_at, capture_method=method)
 
         if draft is None:
             console.print("[yellow]Aborted. Nothing was written.[/yellow]")
             return
 
+        archive_dir = resolved.settings.source_archive_dir
+        assert archive_dir is not None  # Settings derives it from data_dir
+
         with w.transaction() as tx:
+            # Archived inside the transaction so an abort leaves no row citing
+            # a bet that was never written. The copied bytes survive a
+            # rollback, which is harmless: the archive is content-addressed,
+            # so the next attempt reuses them rather than duplicating them.
+            if source_file is not None:
+                archived = archive_source(
+                    tx, source_file, archive_dir=archive_dir, capture_method=method
+                )
+                draft.bet.source_file_id = archived.id
             if draft.account_is_new:
                 tx.accounts.add(draft.account)
             tx.bets.add(draft.bet)
@@ -484,6 +579,8 @@ def add(
         "cash_staked",
         "bonus_staked",
         "status",
+        "capture_method",
+        "source_file_id",
     ]
     render([_summary_row(draft.bet, draft.legs)], columns=columns, fmt=fmt, title="bet add")
 
