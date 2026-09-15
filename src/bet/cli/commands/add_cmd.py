@@ -19,7 +19,7 @@ bet-guard: synthetic-amounts
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -37,7 +37,16 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse, known_sportsbook_codes
 from bet.errors import UsageError
-from bet.models.bet import MULTI_LEG, Bet, BetLeg, CaptureMethod, WagerKind
+from bet.models.bet import (
+    MULTI_LEG,
+    Bet,
+    BetLeg,
+    BetPromotion,
+    CaptureMethod,
+    PromotionScope,
+    PromotionType,
+    WagerKind,
+)
 from bet.models.ownership import SportsbookAccount
 from bet.sources import archive as archive_source
 
@@ -51,6 +60,8 @@ TWO_PLACES = Decimal("0.01")
 
 CAPTURE_METHODS: tuple[str, ...] = get_args(CaptureMethod)
 WAGER_KINDS: tuple[str, ...] = get_args(WagerKind)
+PROMOTION_TYPES: tuple[str, ...] = get_args(PromotionType)
+PROMOTION_SCOPES: tuple[str, ...] = get_args(PromotionScope)
 
 
 # ---------------------------------------------------------------- odds math
@@ -295,6 +306,127 @@ def _leg_from_fields(
     )
 
 
+# --------------------------------------------------------- promotion parsing
+
+PROMO_KEYS = {"type", "generosity_pct", "label", "scope", "leg", "triggered", "value_delivered"}
+
+
+def _parse_promo_spec(spec: str) -> dict[str, str]:
+    """Parse a ``key=value,key=value`` ``--promo`` spec."""
+    fields: dict[str, str] = {}
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise UsageError(
+                f"malformed --promo field {chunk!r}.",
+                remediation="Use key=value pairs separated by commas, e.g. "
+                "--promo 'type=profit_boost,generosity_pct=50'.",
+            )
+        key, _, value = chunk.partition("=")
+        key = key.strip()
+        if key not in PROMO_KEYS:
+            raise UsageError(
+                f"unknown --promo field {key!r}.",
+                remediation=f"Known fields: {', '.join(sorted(PROMO_KEYS))}.",
+            )
+        fields[key] = value.strip()
+    if "type" not in fields:
+        raise UsageError(f"--promo {spec!r} is missing required field 'type'.")
+    return fields
+
+
+def _parse_triggered(raw: str) -> bool:
+    value = raw.strip().lower()
+    if value in {"true", "yes", "1"}:
+        return True
+    if value in {"false", "no", "0"}:
+        return False
+    raise UsageError(
+        f"{raw!r} is not a valid value for 'triggered'.", remediation="Use true|false."
+    )
+
+
+def _promotion_from_fields(
+    fields: dict[str, str],
+    *,
+    apply_order: int,
+    legs: list[BetLeg],
+    tenant_id: object,
+    user_id: object,
+    bet_id: object,
+) -> BetPromotion:
+    """Build one ``BetPromotion``, resolving leg scope to a real leg id.
+
+    ``generosity_pct`` is mandatory on a profit boost. ``apply_boosts`` skips a
+    boost whose percentage is null, so one recorded without it would be stored,
+    reported as a promotion, and contribute nothing -- worse than refusing it.
+    """
+    promotion_type = fields["type"].strip().lower()
+    if promotion_type not in PROMOTION_TYPES:
+        raise UsageError(
+            f"{fields['type']!r} is not a known promotion type.",
+            remediation="Known types: " + ", ".join(sorted(PROMOTION_TYPES)),
+        )
+
+    scope = (fields.get("scope") or "ticket").strip().lower()
+    if scope not in PROMOTION_SCOPES:
+        raise UsageError(
+            f"{scope!r} is not a known promotion scope.",
+            remediation="Known scopes: " + ", ".join(sorted(PROMOTION_SCOPES)),
+        )
+
+    raw_leg = fields.get("leg")
+    if scope == "leg" and not raw_leg:
+        raise UsageError(
+            "--promo scope=leg needs the leg it applies to.",
+            remediation="Add leg=N, the 1-based position of the leg on the slip.",
+        )
+    if scope == "ticket" and raw_leg:
+        raise UsageError("--promo leg=N is only meaningful with scope=leg.")
+
+    bet_leg_id = None
+    if raw_leg:
+        try:
+            leg_order = int(raw_leg)
+        except ValueError as exc:
+            raise UsageError(f"{raw_leg!r} is not a valid leg number.") from exc
+        match = next((leg for leg in legs if leg.leg_order == leg_order), None)
+        if match is None:
+            raise UsageError(
+                f"--promo names leg {leg_order}, but this bet has {len(legs)} legs.",
+            )
+        bet_leg_id = match.id
+
+    generosity = fields.get("generosity_pct")
+    if promotion_type == "profit_boost" and not generosity:
+        raise UsageError(
+            "a profit boost needs generosity_pct.",
+            remediation="Add generosity_pct=50 for a 50% boost. Without it the boost is "
+            "recorded but contributes nothing to the economics.",
+        )
+
+    return BetPromotion(
+        tenant_id=tenant_id,  # type: ignore[arg-type]
+        user_id=user_id,  # type: ignore[arg-type]
+        id=uuid4(),
+        bet_id=bet_id,  # type: ignore[arg-type]
+        bet_leg_id=bet_leg_id,
+        promotion_type=promotion_type,  # type: ignore[arg-type]
+        scope=scope,  # type: ignore[arg-type]
+        label=fields.get("label") or None,
+        apply_order=apply_order,
+        generosity_pct=Decimal(generosity) if generosity else None,
+        triggered=_parse_triggered(fields["triggered"]) if fields.get("triggered") else None,
+        value_delivered=(
+            _parse_money(fields["value_delivered"], field_name="value_delivered")
+            if fields.get("value_delivered")
+            else None
+        ),
+    )
+
+
 # ------------------------------------------------------------ account lookup
 
 
@@ -380,6 +512,7 @@ class _Draft:
     account_is_new: bool
     bet: Bet
     legs: list[BetLeg]
+    promotions: list[BetPromotion] = field(default_factory=list)
 
 
 def _build_from_flags(
@@ -393,6 +526,7 @@ def _build_from_flags(
     bonus_stake: str | None,
     odds: str | None,
     wager_kind: str | None,
+    promo_specs: list[str],
     placed_at: str | None,
     capture_method: CaptureMethod,
 ) -> _Draft:
@@ -443,7 +577,25 @@ def _build_from_flags(
         odds_american_placed=odds_american,
         odds_decimal_placed=odds_decimal,
     )
-    return _Draft(account=account, account_is_new=account_is_new, bet=bet, legs=legs)
+    promotions = [
+        _promotion_from_fields(
+            _parse_promo_spec(spec),
+            apply_order=order,
+            legs=legs,
+            tenant_id=w.scope.tenant_id,
+            user_id=w.scope.user_id,
+            bet_id=bet_id,
+        )
+        for order, spec in enumerate(promo_specs, start=1)
+    ]
+
+    return _Draft(
+        account=account,
+        account_is_new=account_is_new,
+        bet=bet,
+        legs=legs,
+        promotions=promotions,
+    )
 
 
 def _build_interactively(
@@ -583,6 +735,15 @@ def add(
             "parlay for more.",
         ),
     ] = None,
+    promo: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--promo",
+            help="One promotion as key=value pairs (type,generosity_pct,label,scope,leg,"
+            "triggered,value_delivered). Repeat to stack. Odds stay the BASE price: the "
+            "boost is applied to profit at settlement, never folded into the price.",
+        ),
+    ] = None,
     stake: Annotated[str | None, typer.Option("--stake", help="Cash stake.")] = None,
     bonus_stake: Annotated[
         str | None, typer.Option("--bonus-stake", help="Free-bet / bonus stake.")
@@ -630,6 +791,7 @@ def add(
                 bonus_stake=bonus_stake,
                 odds=odds,
                 wager_kind=wager_kind,
+                promo_specs=promo or [],
                 placed_at=placed_at,
                 capture_method=method,
             )
@@ -657,6 +819,8 @@ def add(
                 tx.accounts.add(draft.account)
             tx.bets.add(draft.bet)
             tx.legs.add_all(draft.legs)
+            if draft.promotions:
+                tx.bet_promotions.add_all(draft.promotions)
 
     columns = [
         "id",

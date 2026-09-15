@@ -24,6 +24,7 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
+from bet.models.bet import BetLeg, BetPromotion
 
 runner = CliRunner()
 
@@ -501,3 +502,184 @@ def test_priced_legs_still_derive_the_product(data_dir: Path) -> None:
         bet = w.bets.current()[0]
         assert bet.wager_kind == "parlay"
         assert bet.odds_american_placed == 300
+
+
+# ------------------------------------------------------- promotions (SB-1084)
+
+
+def _promo(
+    fields: dict[str, str], legs: list[BetLeg] | None = None, order: int = 1
+) -> BetPromotion:
+    return add_cmd._promotion_from_fields(
+        fields,
+        apply_order=order,
+        legs=legs or [],
+        tenant_id=uuid4(),
+        user_id=uuid4(),
+        bet_id=uuid4(),
+    )
+
+
+def test_parse_promo_spec_requires_a_type() -> None:
+    with pytest.raises(UsageError):
+        add_cmd._parse_promo_spec("generosity_pct=50")
+
+
+def test_parse_promo_spec_rejects_an_unknown_field() -> None:
+    with pytest.raises(UsageError):
+        add_cmd._parse_promo_spec("type=profit_boost,nonsense=1")
+
+
+def test_promotion_rejects_an_unknown_type() -> None:
+    with pytest.raises(UsageError):
+        _promo({"type": "free_money"})
+
+
+def test_profit_boost_requires_a_generosity_pct() -> None:
+    """A boost with no percentage is stored, reported, and worth nothing.
+
+    ``apply_boosts`` skips a promotion whose ``generosity_pct`` is null, so
+    such a row inflates promotion counts while contributing no economics.
+    """
+    with pytest.raises(UsageError):
+        _promo({"type": "profit_boost"})
+
+
+def test_leg_scoped_promotion_requires_a_leg() -> None:
+    with pytest.raises(UsageError):
+        _promo({"type": "insurance", "scope": "leg"})
+
+
+def test_ticket_scoped_promotion_refuses_a_leg() -> None:
+    with pytest.raises(UsageError):
+        _promo({"type": "insurance", "scope": "ticket", "leg": "1"})
+
+
+def test_leg_scoped_promotion_refuses_a_leg_past_the_end() -> None:
+    legs = [
+        add_cmd._leg_from_fields(
+            {"odds": "-110"}, leg_order=1, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        )
+    ]
+    with pytest.raises(UsageError):
+        _promo({"type": "insurance", "scope": "leg", "leg": "2"}, legs=legs)
+
+
+def test_leg_scoped_promotion_binds_the_named_leg() -> None:
+    legs = [
+        add_cmd._leg_from_fields(
+            {"odds": "-110"}, leg_order=n, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        )
+        for n in (1, 2)
+    ]
+    promotion = _promo({"type": "insurance", "scope": "leg", "leg": "2"}, legs=legs)
+    assert promotion.bet_leg_id == legs[1].id
+    assert promotion.scope == "leg"
+
+
+def test_boosted_bet_round_trips_with_the_base_price(data_dir: Path) -> None:
+    """The captured Romeo Doubs slip: -114 shown struck through, boosted to +132.
+
+    The stored price is the base one. DATA_DICTIONARY 9.2 applies the boost to
+    profit at settlement, and notes the displayed boosted price is rounded and
+    "not used for any calculation".
+    """
+    runner.invoke(app, ["init"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--non-interactive",
+            "--sportsbook",
+            "fanduel",
+            "--leg",
+            "sport=NFL,market=receiving_yds,selection=Romeo Doubs Over 35.5,odds=-114",
+            "--promo",
+            "type=profit_boost,generosity_pct=50",
+            "--stake",
+            "5.00",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        assert bet.odds_american_placed == -114
+        promotions = w.bet_promotions.for_bet(bet.id)
+        assert len(promotions) == 1
+        assert promotions[0].promotion_type == "profit_boost"
+        assert promotions[0].generosity_pct == Decimal("50")
+        assert promotions[0].scope == "ticket"
+        assert promotions[0].bet_leg_id is None
+
+
+def test_stacked_promotions_get_ascending_apply_order(data_dir: Path) -> None:
+    """Order is what composition depends on, so it follows flag order."""
+    runner.invoke(app, ["init"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--non-interactive",
+            "--sportsbook",
+            "fanduel",
+            "--leg",
+            "sport=NFL,market=moneyline,selection=Patriots,odds=-110",
+            "--promo",
+            "type=profit_boost,generosity_pct=50",
+            "--promo",
+            "type=profit_boost,generosity_pct=20,label=Super Boost",
+            "--stake",
+            "5.00",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        promotions = sorted(w.bet_promotions.for_bet(bet.id), key=lambda p: p.apply_order)
+        assert [p.apply_order for p in promotions] == [1, 2]
+        assert [p.generosity_pct for p in promotions] == [Decimal("50"), Decimal("20")]
+        assert promotions[1].label == "Super Boost"
+
+
+def test_recorded_boost_reproduces_the_slip_payout(data_dir: Path) -> None:
+    """End-to-end economics check against the real captured ticket.
+
+    -10000 base with a 10000% boost on a $25 stake returned $50.25 on the
+    slip. Computing from the base price alone gives $25.25 -- the silent
+    money bug the settlement guard exists to prevent.
+    """
+    from bet.settlement.promotions import apply_boosts, base_profit, to_cents
+
+    runner.invoke(app, ["init"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--non-interactive",
+            "--sportsbook",
+            "fanduel",
+            "--leg",
+            "sport=NFL,market=game_special,selection=1+ Points Scored,odds=-10000",
+            "--promo",
+            "type=profit_boost,generosity_pct=10000",
+            "--stake",
+            "25.00",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        promotions = w.bet_promotions.for_bet(bet.id)
+
+    assert bet.odds_american_placed is not None
+    base = base_profit(bet.cash_staked, bet.odds_american_placed)
+    assert to_cents(bet.cash_staked + base) == Decimal("25.25")
+
+    boosted = apply_boosts(base, promotions)
+    assert to_cents(bet.cash_staked + boosted) == Decimal("50.25")

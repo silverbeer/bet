@@ -107,21 +107,40 @@ def _resolve_result(result: BetResult | None, leg_results: dict[int, BetResult])
     return result
 
 
-def _needs_explicit_return(bet: Bet, result: BetResult) -> bool:
+def _needs_explicit_return(bet: Bet, result: BetResult, *, has_promotions: bool = False) -> bool:
+    """Whether the payout has to be supplied rather than computed.
+
+    A promoted bet is one of those cases. ``odds_*_placed`` holds the **base**
+    price (DATA_DICTIONARY 9.2) and a profit boost multiplies profit, not the
+    price, so ``stake * placed_odds`` computes the *unboosted* payout. That is
+    a plausible, smaller, and undetectably wrong number on every boosted win --
+    exactly the silent money bug ``settlement.promotions`` opens by warning
+    about. Until ``apply_boosts`` is wired into settlement, the slip's own
+    figure is the only trustworthy source.
+    """
     if result in RETURN_REQUIRED:
         return True
     if result == "won":
-        return bet.bonus_staked > 0 or bet.odds_decimal_placed is None
+        return bet.bonus_staked > 0 or bet.odds_decimal_placed is None or has_promotions
     return False
 
 
-def _cash_returned(bet: Bet, result: BetResult, explicit_return: Decimal | None) -> Decimal:
+def _cash_returned(
+    bet: Bet,
+    result: BetResult,
+    explicit_return: Decimal | None,
+    *,
+    has_promotions: bool = False,
+) -> Decimal:
     """Compute cash_returned for a result, or use the explicit override.
 
     won: auto-computed only for a plain cash bet with stored placed odds --
     stake * combined decimal odds. A boosted price or a free bet's
-    stake-excluded payout has no single formula here; --return is required
-    (promotion modeling, SB-775/776, is what would make this automatic).
+    stake-excluded payout has no single formula here; --return is required.
+    A bet carrying promotions is required too -- placed odds are the base
+    price, so computing from them would drop the boost (SB-1084). Wiring
+    ``settlement.promotions.apply_boosts`` in here is what would make it
+    automatic.
     lost: nothing is returned.
     push / void: the stake, per DATA_DICTIONARY.md 4.2.
     partial / cashed_out: no formula exists; --return is mandatory.
@@ -134,7 +153,7 @@ def _cash_returned(bet: Bet, result: BetResult, explicit_return: Decimal | None)
         if explicit_return is not None:
             raise UsageError(f"--return is not used with a {result} result.")
         return bet.cash_staked
-    if _needs_explicit_return(bet, result):
+    if _needs_explicit_return(bet, result, has_promotions=has_promotions):
         if explicit_return is None:
             raise UsageError(
                 f"--return is required to settle this {result} result.",
@@ -217,13 +236,16 @@ def _settle_one_interactively(w: Warehouse, bet: Bet, account_label: str | None)
         raw_result = Prompt.ask("Result", choices=list(RESULTS))
     result = _resolve_result(_parse_result(raw_result), leg_results)
 
+    has_promotions = bool(w.bet_promotions.for_bet(bet.id))
     explicit_return: Decimal | None = None
-    if _needs_explicit_return(bet, result) or result not in STAKE_RETURNED | {"lost"}:
+    if _needs_explicit_return(
+        bet, result, has_promotions=has_promotions
+    ) or result not in STAKE_RETURNED | {"lost"}:
         raw_return = Prompt.ask("Amount returned (blank = computed)", default="")
         if raw_return:
             explicit_return = _parse_return(raw_return)
 
-    cash_returned = _cash_returned(bet, result, explicit_return)
+    cash_returned = _cash_returned(bet, result, explicit_return, has_promotions=has_promotions)
     raw_settled_at = Prompt.ask("Settled at (blank = now)", default="")
     settled_at = _parse_timestamp(raw_settled_at or None)
 
@@ -311,7 +333,12 @@ def settle(
 
         resolved_result = _resolve_result(_parse_result(result) if result else None, leg_results)
         explicit_return = _parse_return(return_) if return_ else None
-        cash_returned = _cash_returned(bet, resolved_result, explicit_return)
+        cash_returned = _cash_returned(
+            bet,
+            resolved_result,
+            explicit_return,
+            has_promotions=bool(w.bet_promotions.for_bet(bet.id)),
+        )
 
         updated = _settled_bet(
             bet,
