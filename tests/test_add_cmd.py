@@ -683,3 +683,167 @@ def test_recorded_boost_reproduces_the_slip_payout(data_dir: Path) -> None:
 
     boosted = apply_boosts(base, promotions)
     assert to_cents(bet.cash_staked + boosted) == Decimal("50.25")
+
+
+# ------------------------------------------- interactive SGP entry (SB-1079)
+
+
+def test_interactive_sgp_records_the_group_price(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dual entry: the SGP is built in the book and here at the same time.
+
+    Every leg price is on screen before placement, so unlike a screenshot this
+    path can record them -- and the group price alongside, which is what makes
+    the correlation adjustment measurable.
+    """
+    prompts = iter(
+        [
+            "fanduel",
+            "main",
+            "NFL",
+            "alt_receiving_yds",
+            "A.J. Brown 50+ Yards",
+            "150",
+            "NFL",
+            "alt_receiving_yds",
+            "Jaxon Smith-Njigba 50+ Yards",
+            "120",
+            "-138",  # SGP price
+            "Patriots v Seahawks",  # group label
+            "5.00",
+            "0.00",
+        ]
+    )
+    # add another leg? -> yes, add another? -> no, SGP? -> yes, confirm? -> yes
+    confirms = iter([True, False, True, True])
+
+    monkeypatch.setattr(Prompt, "ask", lambda *a, **k: next(prompts))
+    monkeypatch.setattr(Confirm, "ask", lambda *a, **k: next(confirms))
+
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["add"])
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        assert bet.wager_kind == "same_game_parlay"
+        assert bet.odds_american_placed == -138
+        assert bet.capture_method == "manual"
+
+        groups = w.leg_groups.for_bet(bet.id)
+        assert len(groups) == 1
+        assert groups[0].odds_american == -138
+        assert groups[0].category == "Patriots v Seahawks"
+
+        legs = w.legs.for_bet(bet.id)
+        assert len(legs) == 2
+        assert {leg.odds_american for leg in legs} == {150, 120}
+        assert all(leg.group_id == groups[0].id for leg in legs)
+
+
+def test_interactive_sgp_price_is_not_the_product_of_its_legs(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gap between the two is the correlation adjustment, and is the point.
+
+    +150 and +120 multiply to +450. The book priced the pair at -138 because
+    the legs are correlated. Recording the product would erase that.
+    """
+    prompts = iter(
+        [
+            "fanduel",
+            "main",
+            "NFL",
+            "alt_receiving_yds",
+            "A.J. Brown 50+ Yards",
+            "150",
+            "NFL",
+            "alt_receiving_yds",
+            "Jaxon Smith-Njigba 50+ Yards",
+            "120",
+            "-138",
+            "",
+            "5.00",
+            "0.00",
+        ]
+    )
+    confirms = iter([True, False, True, True])
+
+    monkeypatch.setattr(Prompt, "ask", lambda *a, **k: next(prompts))
+    monkeypatch.setattr(Confirm, "ask", lambda *a, **k: next(confirms))
+
+    runner.invoke(app, ["init"])
+    assert runner.invoke(app, ["add"]).exit_code == 0
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        groups = w.leg_groups.for_bet(bet.id)
+        legs = w.legs.for_bet(bet.id)
+
+    product = add_cmd.combined_decimal_odds([leg.odds_decimal for leg in legs if leg.odds_decimal])
+    assert add_cmd.decimal_to_american(product) == 450
+    assert bet.odds_american_placed == -138
+    assert groups[0].odds_american == -138
+    assert groups[0].category is None
+
+
+def test_interactive_parlay_declining_sgp_keeps_the_product(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cross-game parlay is not correlated, so the product stands."""
+    prompts = iter(
+        [
+            "fanduel",
+            "main",
+            "NFL",
+            "moneyline",
+            "Patriots",
+            "100",
+            "NFL",
+            "moneyline",
+            "Chiefs",
+            "100",
+            "5.00",
+            "0.00",
+        ]
+    )
+    # add another? -> yes, add another? -> no, SGP? -> no, confirm? -> yes
+    confirms = iter([True, False, False, True])
+
+    monkeypatch.setattr(Prompt, "ask", lambda *a, **k: next(prompts))
+    monkeypatch.setattr(Confirm, "ask", lambda *a, **k: next(confirms))
+
+    runner.invoke(app, ["init"])
+    assert runner.invoke(app, ["add"]).exit_code == 0
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        assert bet.wager_kind == "parlay"
+        assert bet.odds_american_placed == 300
+        assert w.leg_groups.for_bet(bet.id) == []
+        assert all(leg.group_id is None for leg in w.legs.for_bet(bet.id))
+
+
+def test_interactive_straight_bet_is_never_asked_about_sgp(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One leg cannot be a same-game parlay, so the prompt must not appear.
+
+    The confirm iterator holds exactly two answers; a third prompt raises
+    StopIteration and fails this test.
+    """
+    prompts = iter(["fanduel", "main", "MLB", "moneyline", "Red Sox", "-145", "25.00", "0.00"])
+    confirms = iter([False, True])  # "add another leg?" then "confirm?"
+
+    monkeypatch.setattr(Prompt, "ask", lambda *a, **k: next(prompts))
+    monkeypatch.setattr(Confirm, "ask", lambda *a, **k: next(confirms))
+
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["add"])
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        assert bet.wager_kind == "straight"
+        assert w.leg_groups.for_bet(bet.id) == []
