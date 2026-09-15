@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import UTC
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from rich.prompt import Confirm, Prompt
@@ -102,9 +103,16 @@ def test_parse_money_rejects_negative() -> None:
         add_cmd._parse_money("-5.00", field_name="stake")
 
 
-def test_parse_leg_spec_requires_odds() -> None:
-    with pytest.raises(UsageError):
-        add_cmd._parse_leg_spec("sport=NFL,selection=Chiefs")
+def test_parse_leg_spec_allows_a_leg_with_no_odds() -> None:
+    """A leg price is optional -- some operators publish none (SB-1078).
+
+    FanDuel renders no per-leg price on a Same Game Parlay and DraftKings
+    publishes none at all, so refusing the leg would lose the selection as
+    well as the price it never had.
+    """
+    fields = add_cmd._parse_leg_spec("sport=NFL,selection=Chiefs")
+    assert fields == {"sport": "NFL", "selection": "Chiefs"}
+    assert "odds" not in fields
 
 
 def test_parse_leg_spec_rejects_unknown_field() -> None:
@@ -330,3 +338,166 @@ def test_interactive_straight_bet_round_trips(
         bets = w.bets.current()
         assert len(bets) == 1
         assert bets[0].cash_staked == Decimal("25.00")
+
+
+# ---------------------------------------------------- ticket-level odds (SB-1078)
+
+
+def test_ticket_odds_prefers_the_stated_price_over_the_product() -> None:
+    """``--odds`` wins even when every leg is priced.
+
+    A Same Game Parlay is repriced as a group, so the product of its legs is
+    the wrong number whether or not it can be computed.
+    """
+    legs = [
+        add_cmd._leg_from_fields(
+            {"odds": "-110"}, leg_order=1, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        ),
+        add_cmd._leg_from_fields(
+            {"odds": "-110"}, leg_order=2, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        ),
+    ]
+    american, decimal_odds = add_cmd._ticket_odds(legs, "-138")
+    assert american == -138
+    assert decimal_odds == add_cmd.american_to_decimal(-138)
+
+
+def test_ticket_odds_derives_the_product_when_no_price_is_stated() -> None:
+    legs = [
+        add_cmd._leg_from_fields(
+            {"odds": "100"}, leg_order=1, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        ),
+        add_cmd._leg_from_fields(
+            {"odds": "100"}, leg_order=2, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        ),
+    ]
+    american, _ = add_cmd._ticket_odds(legs, None)
+    assert american == 300
+
+
+def test_ticket_odds_refuses_a_partially_priced_ticket() -> None:
+    """A product over the priced subset is a number with no meaning.
+
+    Without this guard the two-leg ticket below would be recorded at the price
+    of its one priced leg -- a plausible, wrong, and undetectable figure.
+    """
+    legs = [
+        add_cmd._leg_from_fields(
+            {"odds": "-110"}, leg_order=1, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        ),
+        add_cmd._leg_from_fields(
+            {}, leg_order=2, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        ),
+    ]
+    with pytest.raises(UsageError):
+        add_cmd._ticket_odds(legs, None)
+
+
+def test_ticket_odds_refuses_an_entirely_unpriced_ticket() -> None:
+    """Guards ``decimal_to_american(1)``, which divides by zero."""
+    legs = [
+        add_cmd._leg_from_fields(
+            {}, leg_order=1, tenant_id=uuid4(), user_id=uuid4(), bet_id=uuid4()
+        )
+    ]
+    with pytest.raises(UsageError):
+        add_cmd._ticket_odds(legs, None)
+
+
+def test_parse_wager_kind_rejects_an_unknown_kind() -> None:
+    with pytest.raises(UsageError):
+        add_cmd._parse_wager_kind("accumulator", leg_count=2)
+
+
+def test_parse_wager_kind_rejects_a_multi_leg_kind_on_one_leg() -> None:
+    """A dropped leg is the likely cause, so this is worth catching at entry."""
+    with pytest.raises(UsageError):
+        add_cmd._parse_wager_kind("same_game_parlay", leg_count=1)
+
+
+def test_parse_wager_kind_rejects_straight_on_several_legs() -> None:
+    with pytest.raises(UsageError):
+        add_cmd._parse_wager_kind("straight", leg_count=3)
+
+
+def test_sgp_with_unpriced_legs_round_trips(data_dir: Path) -> None:
+    """The FanDuel screenshot case: a ticket price and legs carrying none."""
+    runner.invoke(app, ["init"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--non-interactive",
+            "--sportsbook",
+            "fanduel",
+            "--wager-kind",
+            "same_game_parlay",
+            "--odds",
+            "-138",
+            "--leg",
+            "sport=NFL,market=alt_receiving_yds,selection=A.J. Brown 50+ Yards,player=A.J. Brown",
+            "--leg",
+            "sport=NFL,market=alt_receiving_yds,selection=Jaxon Smith-Njigba 50+ Yards,"
+            "player=Jaxon Smith-Njigba",
+            "--stake",
+            "5.00",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        assert bet.wager_kind == "same_game_parlay"
+        assert bet.odds_american_placed == -138
+        legs = w.legs.for_bet(bet.id)
+        assert len(legs) == 2
+        assert all(leg.odds_american is None for leg in legs)
+        assert {leg.target_player for leg in legs} == {"A.J. Brown", "Jaxon Smith-Njigba"}
+
+
+def test_unpriced_legs_without_a_ticket_price_are_refused(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--non-interactive",
+            "--sportsbook",
+            "fanduel",
+            "--leg",
+            "sport=NFL,selection=A.J. Brown 50+ Yards",
+            "--stake",
+            "5.00",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "cannot be derived" in str(result.exception)
+
+
+def test_priced_legs_still_derive_the_product(data_dir: Path) -> None:
+    """The pre-SB-1078 path is unchanged when no --odds is passed."""
+    runner.invoke(app, ["init"])
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "--non-interactive",
+            "--sportsbook",
+            "draftkings",
+            "--leg",
+            "sport=NFL,market=moneyline,selection=Bills,odds=100",
+            "--leg",
+            "sport=NFL,market=moneyline,selection=Chiefs,odds=100",
+            "--stake",
+            "10.00",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        assert bet.wager_kind == "parlay"
+        assert bet.odds_american_placed == 300

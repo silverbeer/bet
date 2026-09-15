@@ -37,7 +37,7 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse, known_sportsbook_codes
 from bet.errors import UsageError
-from bet.models.bet import Bet, BetLeg, CaptureMethod
+from bet.models.bet import MULTI_LEG, Bet, BetLeg, CaptureMethod, WagerKind
 from bet.models.ownership import SportsbookAccount
 from bet.sources import archive as archive_source
 
@@ -50,6 +50,7 @@ FOUR_PLACES = Decimal("0.0001")
 TWO_PLACES = Decimal("0.01")
 
 CAPTURE_METHODS: tuple[str, ...] = get_args(CaptureMethod)
+WAGER_KINDS: tuple[str, ...] = get_args(WagerKind)
 
 
 # ---------------------------------------------------------------- odds math
@@ -138,6 +139,59 @@ def _parse_capture_method(raw: str) -> CaptureMethod:
     return value  # type: ignore[return-value]
 
 
+def _parse_wager_kind(raw: str, *, leg_count: int) -> WagerKind:
+    """Validate an explicit ``--wager-kind`` against the ticket it describes.
+
+    A kind that contradicts the leg count is a transcription error worth
+    catching at entry: ``same_game_parlay`` with one leg means a leg was
+    dropped, and ``straight`` with three means they were merged.
+    """
+    value = raw.strip().lower()
+    if value not in WAGER_KINDS:
+        raise UsageError(
+            f"{raw!r} is not a known wager kind.",
+            remediation="Known kinds: " + ", ".join(sorted(WAGER_KINDS)),
+        )
+    if value in MULTI_LEG and leg_count < 2:
+        raise UsageError(
+            f"--wager-kind {value} describes a multi-leg ticket, but only "
+            f"{leg_count} --leg was given.",
+            remediation="Pass one --leg per selection on the slip.",
+        )
+    if value == "straight" and leg_count > 1:
+        raise UsageError(
+            f"--wager-kind straight describes a single selection, but {leg_count} --leg were given."
+        )
+    return value  # type: ignore[return-value]
+
+
+def _ticket_odds(legs: list[BetLeg], explicit: str | None) -> tuple[int, Decimal]:
+    """The ticket's price: stated outright, or derived from fully priced legs.
+
+    ``--odds`` wins whenever it is passed. That is not merely a convenience:
+    for a Same Game Parlay the product of the legs is the *wrong* answer even
+    when every leg price is known, because correlated legs are repriced as a
+    group. The book's own number is the only correct one.
+
+    Deriving requires every leg to carry a price. A product over the subset
+    that happens to have one is a number with no meaning, so a partially
+    priced ticket is refused rather than silently under-priced.
+    """
+    if explicit is not None:
+        american = _parse_odds(explicit)
+        return american, american_to_decimal(american)
+
+    priced = _leg_odds(legs)
+    if len(priced) != len(legs):
+        raise UsageError(
+            f"{len(legs) - len(priced)} of {len(legs)} legs have no odds, so the ticket "
+            "price cannot be derived.",
+            remediation="Pass --odds with the ticket price shown on the slip.",
+        )
+    combined = combined_decimal_odds(priced)
+    return decimal_to_american(combined), combined
+
+
 def _check_provenance(capture_method: CaptureMethod, source_file: Path | None) -> None:
     """Refuse the incoherent combination; warn about the merely incomplete one.
 
@@ -180,8 +234,15 @@ LEG_KEYS = {"sport", "league", "market", "selection", "odds", "line", "side", "t
 def _parse_leg_spec(spec: str) -> dict[str, str]:
     """Parse a ``key=value,key=value`` ``--leg`` spec.
 
-    Keys: sport, league, market, selection, odds (required), line, side, team,
-    player. Matches the fields a single leg prompt collects interactively.
+    Keys: sport, league, market, selection, odds, line, side, team, player.
+    Matches the fields a single leg prompt collects interactively.
+
+    ``odds`` is optional. ``BetLeg.odds_american`` is nullable by design --
+    DraftKings publishes no per-leg price, and FanDuel renders none for a Same
+    Game Parlay -- so a leg with no price is a faithful transcription rather
+    than an incomplete one. The ticket price then has to arrive via ``--odds``;
+    :func:`_ticket_odds` is what refuses the combination that leaves a bet with
+    no price at all.
     """
     fields: dict[str, str] = {}
     for chunk in spec.split(","):
@@ -202,8 +263,6 @@ def _parse_leg_spec(spec: str) -> dict[str, str]:
                 remediation=f"Known fields: {', '.join(sorted(LEG_KEYS))}.",
             )
         fields[key] = value.strip()
-    if "odds" not in fields:
-        raise UsageError(f"--leg {spec!r} is missing required field 'odds'.")
     return fields
 
 
@@ -215,7 +274,8 @@ def _leg_from_fields(
     user_id: object,
     bet_id: object,
 ) -> BetLeg:
-    odds_american = _parse_odds(fields["odds"])
+    raw_odds = fields.get("odds")
+    odds_american = _parse_odds(raw_odds) if raw_odds else None
     return BetLeg(
         tenant_id=tenant_id,  # type: ignore[arg-type]
         user_id=user_id,  # type: ignore[arg-type]
@@ -231,7 +291,7 @@ def _leg_from_fields(
         target_team=fields.get("team") or None,
         target_player=fields.get("player") or None,
         odds_american=odds_american,
-        odds_decimal=american_to_decimal(odds_american),
+        odds_decimal=american_to_decimal(odds_american) if odds_american is not None else None,
     )
 
 
@@ -331,6 +391,8 @@ def _build_from_flags(
     leg_specs: list[str],
     stake: str | None,
     bonus_stake: str | None,
+    odds: str | None,
+    wager_kind: str | None,
     placed_at: str | None,
     capture_method: CaptureMethod,
 ) -> _Draft:
@@ -361,7 +423,12 @@ def _build_from_flags(
         )
         for order, spec in enumerate(leg_specs, start=1)
     ]
-    combined = combined_decimal_odds(_leg_odds(legs))
+    odds_american, odds_decimal = _ticket_odds(legs, odds)
+    kind: WagerKind = (
+        _parse_wager_kind(wager_kind, leg_count=len(legs))
+        if wager_kind
+        else ("parlay" if len(legs) > 1 else "straight")
+    )
 
     bet = Bet(
         tenant_id=w.scope.tenant_id,
@@ -370,11 +437,11 @@ def _build_from_flags(
         sportsbook_account_id=account.id,
         capture_method=capture_method,
         placed_at=_parse_placed_at(placed_at),
-        wager_kind="parlay" if len(legs) > 1 else "straight",
+        wager_kind=kind,
         cash_staked=cash_staked,
         bonus_staked=bonus_staked,
-        odds_american_placed=decimal_to_american(combined),
-        odds_decimal_placed=combined,
+        odds_american_placed=odds_american,
+        odds_decimal_placed=odds_decimal,
     )
     return _Draft(account=account, account_is_new=account_is_new, bet=bet, legs=legs)
 
@@ -495,7 +562,25 @@ def add(
         typer.Option(
             "--leg",
             help="One leg as key=value pairs (sport,league,market,selection,odds,line,side,team,"
-            "player). Repeat for a parlay. odds is required.",
+            "player). Repeat for a parlay. odds is optional: pass --odds when the slip "
+            "prices the ticket but not its legs.",
+        ),
+    ] = None,
+    odds: Annotated[
+        str | None,
+        typer.Option(
+            "--odds",
+            help="Ticket-level American odds as shown on the slip. Authoritative when "
+            "passed; required when any leg has no odds. A Same Game Parlay is priced as "
+            "a group, so its ticket price is never the product of its legs.",
+        ),
+    ] = None,
+    wager_kind: Annotated[
+        str | None,
+        typer.Option(
+            "--wager-kind",
+            help="Ticket shape, e.g. same_game_parlay. Default: straight for one leg, "
+            "parlay for more.",
         ),
     ] = None,
     stake: Annotated[str | None, typer.Option("--stake", help="Cash stake.")] = None,
@@ -543,6 +628,8 @@ def add(
                 leg_specs=leg or [],
                 stake=stake,
                 bonus_stake=bonus_stake,
+                odds=odds,
+                wager_kind=wager_kind,
                 placed_at=placed_at,
                 capture_method=method,
             )
