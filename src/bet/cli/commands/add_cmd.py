@@ -41,6 +41,7 @@ from bet.models.bet import (
     MULTI_LEG,
     Bet,
     BetLeg,
+    BetLegGroup,
     BetPromotion,
     CaptureMethod,
     PromotionScope,
@@ -513,6 +514,7 @@ class _Draft:
     bet: Bet
     legs: list[BetLeg]
     promotions: list[BetPromotion] = field(default_factory=list)
+    leg_groups: list[BetLegGroup] = field(default_factory=list)
 
 
 def _build_from_flags(
@@ -639,6 +641,28 @@ def _build_interactively(
         if not Confirm.ask("Add another leg?", default=False):
             break
 
+    leg_groups: list[BetLegGroup] = []
+    kind: WagerKind = "parlay" if len(legs) > 1 else "straight"
+    product = combined_decimal_odds(_leg_odds(legs))
+    combined = product
+
+    if len(legs) > 1 and Confirm.ask("Same Game Parlay?", default=False):
+        kind = "same_game_parlay"
+        group_american = _parse_odds(Prompt.ask("SGP price (American, as the book shows it)"))
+        combined = american_to_decimal(group_american)
+        group = BetLegGroup(
+            tenant_id=w.scope.tenant_id,
+            user_id=w.scope.user_id,
+            id=uuid4(),
+            bet_id=bet_id,
+            category=Prompt.ask("Group label", default="") or None,
+            odds_american=group_american,
+            odds_decimal=combined,
+        )
+        leg_groups.append(group)
+        for leg in legs:
+            leg.group_id = group.id
+
     cash_staked = _parse_money(Prompt.ask("Stake", default="0.00"), field_name="stake")
     bonus_staked = _parse_money(
         Prompt.ask("Free-bet / bonus stake", default="0.00"), field_name="bonus stake"
@@ -646,7 +670,6 @@ def _build_interactively(
     if cash_staked == 0 and bonus_staked == 0:
         raise UsageError("a bet must risk cash or bonus stake.")
 
-    combined = combined_decimal_odds(_leg_odds(legs))
     payout = ((cash_staked + bonus_staked) * combined).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     console.print()
@@ -657,6 +680,14 @@ def _build_interactively(
     if bonus_staked:
         stake_line += f" + ${bonus_staked} bonus"
     console.print(stake_line)
+    if leg_groups:
+        # The whole reason to model groups: the book's group price against the
+        # product of its legs is the correlation adjustment, and it is only
+        # measurable when both numbers are recorded.
+        console.print(
+            f"  SGP price: {decimal_to_american(combined):+d}   "
+            f"legs multiply to {decimal_to_american(product):+d}"
+        )
     console.print(f"  -> potential payout: ${payout}")
     if not Confirm.ask("Confirm?", default=True):
         return None
@@ -668,13 +699,19 @@ def _build_interactively(
         sportsbook_account_id=account.id,
         capture_method=capture_method,
         placed_at=_parse_placed_at(placed_at),
-        wager_kind="parlay" if len(legs) > 1 else "straight",
+        wager_kind=kind,
         cash_staked=cash_staked,
         bonus_staked=bonus_staked,
         odds_american_placed=decimal_to_american(combined),
         odds_decimal_placed=combined,
     )
-    return _Draft(account=account, account_is_new=account_is_new, bet=bet, legs=legs)
+    return _Draft(
+        account=account,
+        account_is_new=account_is_new,
+        bet=bet,
+        legs=legs,
+        leg_groups=leg_groups,
+    )
 
 
 def _summary_row(bet: Bet, legs: list[BetLeg]) -> dict[str, object]:
@@ -818,6 +855,8 @@ def add(
             if draft.account_is_new:
                 tx.accounts.add(draft.account)
             tx.bets.add(draft.bet)
+            if draft.leg_groups:
+                tx.leg_groups.add_all(draft.leg_groups)
             tx.legs.add_all(draft.legs)
             if draft.promotions:
                 tx.bet_promotions.add_all(draft.promotions)
