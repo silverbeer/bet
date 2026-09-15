@@ -298,3 +298,85 @@ def test_interactive_walk_settles_an_open_bet(
 
     with _open_warehouse(data_dir) as w:
         assert w.bets.open_bets() == []
+
+
+# ------------------------------------------- promoted bets (SB-1084)
+
+
+def _attach_boost(w: Warehouse, bet: Bet, pct: str = "50") -> None:
+    from bet.models.bet import BetPromotion
+
+    w.bet_promotions.add(
+        BetPromotion(
+            tenant_id=w.scope.tenant_id,
+            user_id=w.scope.user_id,
+            id=uuid.uuid4(),
+            bet_id=bet.id,
+            promotion_type="profit_boost",
+            scope="ticket",
+            apply_order=1,
+            generosity_pct=Decimal(pct),
+        )
+    )
+
+
+def test_a_won_promoted_bet_refuses_to_compute_its_own_payout(data_dir: Path) -> None:
+    """Placed odds are the BASE price, so computing from them drops the boost.
+
+    Without this guard the bet below settles at the unboosted payout and calls
+    it correct -- smaller than reality, plausible, and undetectable afterwards.
+    """
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w))
+        _attach_boost(w, bet)
+
+    result = _settle(str(bet.id), "--result", "won")
+    assert result.exit_code != 0
+    assert "--return" in str(result.exception)
+
+
+def test_a_won_promoted_bet_settles_on_the_stated_amount(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w))
+        _attach_boost(w, bet)
+
+    result = _settle(str(bet.id), "--result", "won", "--return", "20.00")
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        settled = w.bets.get(bet.id)
+        assert settled is not None
+        assert settled.cash_returned == Decimal("20.00")
+
+
+def test_an_unpromoted_bet_still_computes_its_payout(data_dir: Path) -> None:
+    """The guard must not widen to bets that never carried a promotion."""
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w))
+
+    result = _settle(str(bet.id), "--result", "won")
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        settled = w.bets.get(bet.id)
+        assert settled is not None
+        assert settled.cash_returned == Decimal("16.67")
+
+
+def test_a_lost_promoted_bet_needs_no_stated_amount(data_dir: Path) -> None:
+    """A loss returns nothing whether or not a boost was attached."""
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w))
+        _attach_boost(w, bet)
+
+    result = _settle(str(bet.id), "--result", "lost")
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        settled = w.bets.get(bet.id)
+        assert settled is not None
+        assert settled.cash_returned == Decimal("0.00")
