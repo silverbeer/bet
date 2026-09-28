@@ -4,11 +4,12 @@ description: >-
   Review a bet the user is *considering* before they place it. The user sends a
   screenshot of a bet slip (or describes the bet); Claude reads it, checks the
   user's own settled history with `bet similar`, checks recent form with cited
-  web sources, and gives short feedback. Writes nothing. Use when the user says
-  "review this bet", "should I place this", "what do you think of this", "thoughts
-  on this slip", or sends a slip that has not been placed yet (no BET ID /
-  PLACED line, usually a "Place bet" button). For a slip that already shows a
-  BET ID or a result, use bet-capture instead.
+  web sources, and gives a verdict (strong yes to strong no) with short
+  feedback. Writes nothing. Use when the user says "review this bet", "should I
+  place this", "what do you think of this", "thoughts on this slip", or sends a
+  slip that has not been placed yet (no BET ID / PLACED line, usually a "Place
+  bet" button). For a slip that already shows a BET ID or a result, use
+  bet-capture instead.
 ---
 
 # Reviewing a proposed bet
@@ -93,26 +94,58 @@ Keep it to the stat and the availability news. This is not a game preview.
 - For an SGP with priced legs: the group price vs the product of the legs.
   The gap is the book's correlation adjustment; say which way it cuts.
 
-### 5. Feedback
+### 5. Verdict
+
+Every review opens with one verdict from this scale. **Strong and lean are
+different claims**, so the bar for "strong" is set here, not by feel.
+
+| Verdict | Means | Bar to earn it |
+|---|---|---|
+| 🔥 **Strong yes** | Everything points the same way | History, form **and** price all support it, and the history rows it leans on are at least `exploratory` (n ≥ 30) and positive. No watch-outs. |
+| 👍 **Lean yes** | More for it than against | Form and price support it; history is thin or silent but not against it. |
+| 🤷 **Neutral** | Nothing tips it | Evidence mixed, or too thin in every direction to say. |
+| 👎 **Lean no** | More against it than for | Form or price argues against it, or a key availability is unresolved at game time. |
+| 🛑 **Strong no** | A hard blocker | **Any one** of: the player the bet depends on is out/inactive; the line sits well past everything recent form supports; the ticket is 3+ legs (the user's own 2026-09-18 rule); the price is clearly worse than the market for the same outcome. |
+
+The asymmetry is deliberate. A blocker is a fact you can look up; an edge is
+a claim about the future that needs every source agreeing. So **strong yes is
+rare**: while most `bet similar` rows are `insufficient`, it is effectively
+unreachable, and saying so is part of the answer, not a flaw in it.
+
+Pair the verdict with a confidence (**low / medium / high**) reflecting how
+much evidence stands behind it. A lean on thin data is "lean yes, low".
+
+**Multi-leg tickets get a verdict per leg** too, with the same emoji. A parlay
+is only as good as its weakest leg; naming that leg is the most useful line in
+the review.
+
+### 6. Feedback
 
 Short. This shape, no longer:
 
 ```
+## <emoji> <Verdict> · <confidence> confidence
+<one punchy line: the single biggest reason>
+
 **Read:** <one line: the bet as understood; flagged fields marked (?)>
+**Legs:** <multi-leg only: "Under 46.5 👍 · Eagles -2.5 🤷">
 
 **Your history:** <1–3 lines from bet similar, n stated, flags respected>
 **Recent form:** <1–3 lines, each with a source link>
-**Price:** <one line>
+**Price:** <one line; payout on the stake>
 **Watch-outs:** <policy breach / injury uncertainty / thin sample — only if real>
 
-**Net:** <one sentence. What the evidence leans, and how strongly.>
+**Net:** <one sentence tying the verdict to the evidence.>
 ```
 
-The **Net** line may say the evidence leans for or against. It must not
-guarantee an outcome or tell the user to raise a stake. When history and form
-disagree, say they disagree.
+The stake is $5 unless the slip shows otherwise (the user bets flat); use it
+for the payout on the **Price** line without asking.
 
-### 6. If they place it
+The verdict is about the evidence, never a promise. Do not guarantee an
+outcome, and never suggest raising a stake. When history and form disagree,
+say they disagree and let the verdict sit nearer neutral.
+
+### 7. If they place it
 
 Offer once: the placed slip (with its BET ID) can go straight through
 bet-capture.
