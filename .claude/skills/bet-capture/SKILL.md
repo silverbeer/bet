@@ -8,6 +8,8 @@ description: >-
   bet-slip screenshot, says "log my bets", "process the inbox", "add this bet",
   "capture these", or points at an image of a wager. Do NOT use for sportsbook
   CSV/PDF exports — those are the import path (SB-689, SB-715), not this one.
+  Do NOT use for a slip that has not been placed yet (no BET ID / PLACED line)
+  or when the user asks what you think of a bet — that is bet-review.
 ---
 
 # Capturing bets from screenshots
