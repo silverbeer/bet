@@ -5,11 +5,12 @@ description: >-
   screenshot of a bet slip (or describes the bet); Claude reads it, checks the
   user's own settled history with `bet similar`, checks recent form with cited
   web sources, and gives a verdict (strong yes to strong no) with short
-  feedback. Writes nothing. Use when the user says "review this bet", "should I
-  place this", "what do you think of this", "thoughts on this slip", or sends a
-  slip that has not been placed yet (no BET ID / PLACED line, usually a "Place
-  bet" button). For a slip that already shows a BET ID or a result, use
-  bet-capture instead.
+  feedback. On request, finds the best-supported bet in the same game. Writes
+  nothing. Use when the user says "review this bet", "should I place this",
+  "what do you think of this", "thoughts on this slip", "give me a strong yes
+  bet for this game", "best bet in this game", or sends a slip that has not been
+  placed yet (no BET ID / PLACED line, usually a "Place bet" button). For a slip
+  that already shows a BET ID or a result, use bet-capture instead.
 ---
 
 # Reviewing a proposed bet
@@ -101,7 +102,7 @@ different claims**, so the bar for "strong" is set here, not by feel.
 
 | Verdict | Means | Bar to earn it |
 |---|---|---|
-| 🔥 **Strong yes** | Everything points the same way | History, form **and** price all support it, and the history rows it leans on are at least `exploratory` (n ≥ 30) and positive. No watch-outs. |
+| 🔥 **Strong yes** | Everything points the same way | History, form **and** price all support it. History support means the `shape` row is at least `exploratory` (n ≥ 30) and positive, and no player/market row is negative. No watch-outs. |
 | 👍 **Lean yes** | More for it than against | Form and price support it; history is thin or silent but not against it. |
 | 🤷 **Neutral** | Nothing tips it | Evidence mixed, or too thin in every direction to say. |
 | 👎 **Lean no** | More against it than for | Form or price argues against it, or a key availability is unresolved at game time. |
@@ -109,8 +110,8 @@ different claims**, so the bar for "strong" is set here, not by feel.
 
 The asymmetry is deliberate. A blocker is a fact you can look up; an edge is
 a claim about the future that needs every source agreeing. So **strong yes is
-rare**: while most `bet similar` rows are `insufficient`, it is effectively
-unreachable, and saying so is part of the answer, not a flaw in it.
+rare**. Today only the singles `shape` row clears n ≥ 30, so a strong yes is
+reachable for a single and not yet for any parlay; say which when it matters.
 
 Pair the verdict with a confidence (**low / medium / high**) reflecting how
 much evidence stands behind it. A lean on thin data is "lean yes, low".
@@ -149,6 +150,38 @@ say they disagree and let the verdict sit nearer neutral.
 
 Offer once: the placed slip (with its BET ID) can go straight through
 bet-capture.
+
+### 8. Follow-up: "give me a strong yes bet for this game"
+
+After a review the user may ask for the best bet in the same game. Treat it as
+a search for the **best-supported** bet, not a request for a label.
+
+1. **Shortlist 2–3 candidates** in that game, singles or 2-leg only (the
+   user's rule). Weight toward the shapes and markets where the user's record
+   is best: run `bet --format json similar` on a rough candidate per market and
+   prefer rows that are positive and least thin. Singles are the only shape
+   whose history can currently support a strong yes.
+2. **Grade each** exactly as in steps 3–5: form on the relevant stat, the
+   injury report, price, with sources. Same scale, same bars.
+3. **Return the best one**, with its grade and a one-line reason each for the
+   others. Format:
+
+```
+## Best bet: <selection> — <emoji> <Verdict> · <confidence>
+<one line: why this one>
+
+**Also looked at:** <candidate — verdict — reason> · <candidate — verdict — reason>
+**Price:** <the price if a live source shows it; otherwise "check in app">
+```
+
+**Never promote a lean to strong to meet the ask.** If nothing clears the bar,
+the answer is "no strong yes in this game; best is <X>, lean yes", which is
+itself the useful answer. A label that bends on request stops meaning anything
+on the day a bet does earn it.
+
+Prop and alternate-line prices are usually not findable by web search. Name
+the pick and the line; the user checks the price in the app, or sends that
+slip for a full review.
 
 ## Boundaries
 
