@@ -5,7 +5,7 @@ and each command reports the ticket that will implement it. A stub that names
 its ticket is more useful than a command that does not exist: it answers "is
 this planned?" without a trip to the backlog.
 
-``config``, ``doctor``, ``add``, ``list``, ``settle``, and ``bets`` (except
+``config``, ``doctor``, ``add``, ``list``, ``settle``, ``similar``, and ``bets`` (except
 its ``correct`` sub-command, still a stub here) are real and are registered
 separately.
 """
