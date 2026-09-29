@@ -188,6 +188,26 @@ def _settled_bet(
     )
 
 
+# Ticket outcomes that are also a leg's outcome. A cash-out or partial settles
+# the ticket without deciding the selection, so it says nothing about the leg.
+LEG_DECIDING: frozenset[str] = frozenset({"won", "lost", "push", "void"})
+
+
+def _with_single_leg(
+    legs: list[BetLeg], leg_results: dict[int, BetResult], result: BetResult
+) -> dict[int, BetResult]:
+    """On a single, the ticket result *is* the leg result (SB-1140).
+
+    Settling a straight bet with only ``--result`` used to leave its one leg
+    null, and every leg-level analytic then quietly dropped it: ``bet similar``
+    counted 8 receiving-yards singles but 5 decided legs. An explicit
+    ``--leg-result`` still wins.
+    """
+    if len(legs) != 1 or legs[0].leg_order in leg_results or result not in LEG_DECIDING:
+        return leg_results
+    return {**leg_results, legs[0].leg_order: result}
+
+
 def _settled_leg(leg: BetLeg, result: BetResult) -> BetLeg:
     return BetLeg(**{**leg.model_dump(), "result": result, "updated_at": datetime.now(UTC)})
 
@@ -256,6 +276,7 @@ def _settle_one_interactively(w: Warehouse, bet: Bet, account_label: str | None)
         return False
 
     updated = _settled_bet(bet, result=result, cash_returned=cash_returned, settled_at=settled_at)
+    leg_results = _with_single_leg(legs, leg_results, result)
     with w.transaction() as tx:
         tx.bets.update(updated)
         for leg in legs:
@@ -346,6 +367,7 @@ def settle(
             cash_returned=cash_returned,
             settled_at=_parse_timestamp(settled_at),
         )
+        leg_results = _with_single_leg(legs, leg_results, resolved_result)
         with w.transaction() as tx:
             tx.bets.update(updated)
             for leg in legs:
