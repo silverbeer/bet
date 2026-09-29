@@ -128,6 +128,18 @@ def _money(bets: Iterable[Bet]) -> tuple[int, Decimal, Decimal, Decimal | None]:
     return len(chosen), staked, net, _ratio(net, staked)
 
 
+def _leg_outcome(h: HistoricBet, leg: BetLeg) -> str | None:
+    """A leg's result, falling back to the ticket's on a single (SB-1140).
+
+    Singles settled with only ``--result`` carry a null leg result. For a
+    single the two are the same outcome, so reading the ticket recovers it; on
+    a parlay they are not, and a null leg stays undecided.
+    """
+    if leg.result is not None:
+        return leg.result
+    return h.bet.result if len(h.legs) == 1 else None
+
+
 def _ticket_row(
     dimension: str,
     match: str,
@@ -160,10 +172,9 @@ def _leg_row(
     predicate: Callable[[BetLeg], bool],
     **thresholds: int,
 ) -> dict[str, Any]:
-    decided = [
-        leg for h in history for leg in h.legs if predicate(leg) and leg.result in ("won", "lost")
-    ]
-    won = sum(1 for leg in decided if leg.result == "won")
+    outcomes = [_leg_outcome(h, leg) for h in history for leg in h.legs if predicate(leg)]
+    decided = [o for o in outcomes if o in ("won", "lost")]
+    won = sum(1 for o in decided if o == "won")
     singles = [h.bet for h in history if len(h.legs) == 1 and predicate(h.legs[0])]
     bets, staked, net, roi = _money(singles)
     return {

@@ -380,3 +380,55 @@ def test_a_lost_promoted_bet_needs_no_stated_amount(data_dir: Path) -> None:
         settled = w.bets.get(bet.id)
         assert settled is not None
         assert settled.cash_returned == Decimal("0.00")
+
+
+# --------------------------------------- single-leg cascade (SB-1140)
+
+
+@pytest.mark.parametrize("outcome", ["won", "lost", "push", "void"])
+def test_settling_a_single_records_its_leg_result(data_dir: Path, outcome: str) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w))
+
+    result = _settle(str(bet.id), "--result", outcome)
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        assert [leg.result for leg in w.legs.for_bet(bet.id)] == [outcome]
+
+
+def test_a_cashed_out_single_leaves_its_leg_undecided(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w))
+
+    result = _settle(str(bet.id), "--result", "cashed_out", "--return", "8.00")
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        assert [leg.result for leg in w.legs.for_bet(bet.id)] == [None]
+
+
+def test_an_explicit_leg_result_on_a_single_wins(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w))
+
+    result = _settle(str(bet.id), "--result", "lost", "--leg-result", "1=lost")
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        assert [leg.result for leg in w.legs.for_bet(bet.id)] == ["lost"]
+
+
+def test_a_parlay_ticket_result_does_not_cascade_to_its_legs(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w), num_legs=2)
+
+    result = _settle(str(bet.id), "--result", "won")
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        assert [leg.result for leg in w.legs.for_bet(bet.id)] == [None, None]

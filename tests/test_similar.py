@@ -456,3 +456,25 @@ def test_cli_rejects_a_boost_without_generosity() -> None:
 @pytest.fixture
 def data_dir(tmp_path: Path) -> Path:
     return tmp_path / "data"
+
+
+# ------------------------------------------- null leg results (SB-1140)
+
+
+def test_a_single_with_no_leg_result_counts_its_ticket_result() -> None:
+    history = [
+        HistoricBet(bet=_bet(result="won", returned="25.00"), legs=[_leg(**BOWERS_TD)]),
+        HistoricBet(bet=_bet(result="lost"), legs=[_leg(**BOWERS_TD)]),
+    ]
+    row = _rows(_bowers_proposal(), history)["leg 1 player"]
+    assert (row["n"], row["won"], row["bets"]) == (2, 1, 2)
+
+
+def test_a_parlay_leg_with_no_result_stays_undecided() -> None:
+    history = [
+        HistoricBet(
+            bet=_bet(result="lost", kind="same_game_parlay"),
+            legs=[_leg(1, **BOWERS_TD), _leg(2, result="lost", target_player="Someone Else")],
+        )
+    ]
+    assert _rows(_bowers_proposal(), history)["leg 1 player"]["n"] == 0
