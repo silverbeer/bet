@@ -18,8 +18,10 @@ from rich.console import Console
 
 from bet import __version__, log
 from bet.cli import tree
-from bet.cli.commands import bets_cmd, config_cmd
+from bet.cli.commands import balance_cmd, bets_cmd, config_cmd
 from bet.cli.commands.add_cmd import add as add_command
+from bet.cli.commands.cashflow_cmd import deposit as deposit_command
+from bet.cli.commands.cashflow_cmd import withdraw as withdraw_command
 from bet.cli.commands.doctor import doctor as doctor_command
 from bet.cli.commands.init_cmd import init as init_command
 from bet.cli.commands.list_cmd import list_bets as list_command
@@ -49,6 +51,9 @@ app.command("similar", help="Your settled record on bets comparable to a propose
     similar_command
 )
 app.add_typer(bets_cmd.app, name="bets")
+app.add_typer(balance_cmd.app, name="balance")
+app.command("deposit", help="Record cash deposited into a sportsbook account.")(deposit_command)
+app.command("withdraw", help="Record cash withdrawn from a sportsbook account.")(withdraw_command)
 tree.register(app)
 
 

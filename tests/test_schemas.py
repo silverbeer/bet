@@ -272,6 +272,8 @@ CHECK_TO_REFERENCE = {
     ("promotion", "promotion_type"): "promotion_type",
     ("promotion", "state"): "promotion_state",
     ("bet_promotion", "promotion_type"): "promotion_type",
+    ("balance_snapshot", "capture_method"): "capture_method",
+    ("cash_flow", "capture_method"): "capture_method",
 }
 
 

@@ -19,6 +19,7 @@ from uuid import UUID
 
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from bet.config import OutputFormat
 
@@ -51,8 +52,19 @@ def render(
     fmt: OutputFormat = OutputFormat.TABLE,
     title: str | None = None,
     stream: TextIO | None = None,
+    markup: bool = True,
+    fold: bool = False,
 ) -> None:
-    """Write ``rows`` to stdout in the requested format."""
+    """Write ``rows`` to stdout in the requested format.
+
+    ``markup=False`` renders table cells as literal text, for rows carrying
+    user-entered strings: an account label like ``[old]`` must print as
+    written, not be read as a Rich style tag (or fail to parse as one).
+
+    ``fold=True`` wraps an over-wide cell onto further lines instead of
+    cutting it short with an ellipsis -- for wide tables of money, where a
+    truncated figure is worse than none.
+    """
     out = stream if stream is not None else sys.stdout
     keys = list(columns) if columns else sorted({k for row in rows for k in row})
 
@@ -74,7 +86,8 @@ def render(
         return
     table = Table(title=title, header_style="bold")
     for key in keys:
-        table.add_column(key)
+        table.add_column(key, overflow="fold" if fold else "ellipsis")
     for row in rows:
-        table.add_row(*["" if row.get(k) is None else str(_plain(row.get(k))) for k in keys])
+        cells = ["" if row.get(k) is None else str(_plain(row.get(k))) for k in keys]
+        table.add_row(*(cells if markup else [Text(c) for c in cells]))
     console.print(table)

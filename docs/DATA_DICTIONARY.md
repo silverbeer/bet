@@ -496,3 +496,138 @@ economic_roi          -9.17%
 
 Both numbers are correct. They answer different questions, and reporting only
 one of them would misrepresent the period.
+
+---
+
+## 10. Balance reconciliation
+
+<!-- bet-guard: synthetic-amounts -->
+
+**Added by SB-1333.** An operator's reported balance is the one figure BET does
+not derive from its own bets, which makes it an independent check that the
+bet ledger is complete.
+
+### 10.1 What is recorded
+
+Two append-only tables, both keyed on `sportsbook_account` (not sportsbook:
+the user holds balances at several books, and may hold more than one account
+at a book).
+
+| Table | Row | Money |
+|---|---|---|
+| `core.balance_snapshot` | one reported balance at `observed_at` | `cash_balance` (withdrawable cash), `bonus_balance` (recorded, never reconciled) |
+| `core.cash_flow` | one deposit or withdrawal at `occurred_at` | `amount`, always positive; `kind` is `deposit` or `withdrawal` |
+
+Both carry `capture_method` and an optional `source_file_id` with exactly the
+meaning they have on `core.bet`. Neither is ever updated. Correcting a wrong
+row needs an explicit correction workflow (SB-703), for which `supersedes_id`
+is reserved; it is unused today, and recording another snapshot does not
+correct a wrong one (see 10.2).
+
+CLI: `bet balance add`, `bet deposit`, `bet withdraw` write; `bet balance`
+reports (`--history` for every interval, `--sportsbook`/`--account-label` to
+narrow). A `--at` without an offset, or a bare date, is read in the machine's
+local time zone, and may be at most five minutes in the future. On the write
+commands `--account-label` matches ignoring case and spacing, and creates an
+account only when the sportsbook has none yet.
+
+### 10.2 The equation
+
+For consecutive snapshots of one account at `t0 < t1`:
+
+```
+expected = cash_balance(t0)
+         + deposits(t0, t1]   - withdrawals(t0, t1]
+         - Σ cash_staked   of current bets with placed_at  in (t0, t1]
+         + Σ cash_returned of current bets with settled_at in (t0, t1]
+
+gap      = cash_balance(t1) - expected
+```
+
+Stake leaves the account when a bet is placed; its return arrives when it
+settles. Bucketing each by its own timestamp is the ticket's "settled P&L
+minus open stakes" stated per interval: a bet still open at `t1` contributes
+its stake only, and one placed before `t0` but settled inside the interval
+contributes its return only, because its stake is already in the opening
+balance.
+
+The first snapshot of an account is a `baseline`: it has no interval, so its
+deposits, withdrawals, stake, return, expected balance and gap are all blank.
+
+**Interval gap and cumulative gap.** `gap` is the equation above over the
+latest interval only. `cumulative_gap` is the same equation applied once from
+the account's baseline `tb` to its latest snapshot `tn`:
+
+```
+cumulative_gap = cash_balance(tn)
+               - ( cash_balance(tb)
+                 + deposits(tb, tn] - withdrawals(tb, tn]
+                 - Σ cash_staked   with placed_at  in (tb, tn]
+                 + Σ cash_returned with settled_at in (tb, tn] )
+```
+
+It equals the sum of every interval gap since the baseline. **An account's
+status is decided by `cumulative_gap`**: `ok` when it is exactly zero, `GAP`
+when it is not; the interval gap is a diagnostic. Judging by the interval
+alone fails both ways:
+
+- A *timing* error makes gaps that are not real. `settled_at` is often the
+  moment the bet was entered, not the moment the book paid it, so a return
+  can land one interval late: `+X` in one interval and `-X` in the next on a
+  complete ledger. Across the span both sides fall inside and cancel.
+- A *real* gap disappears from the latest interval as soon as a routine
+  snapshot follows it. In the span it persists until the record is fixed.
+
+`--history` prints every interval, and there each row's `status` judges its
+own interval; `cumulative_gap` on each row is the running total to that row.
+
+A gap means a bet is missing, a stake or return was miscaptured, or a deposit
+or withdrawal was not recorded. It is reported, never corrected, and it does
+not change the command's exit status. A wrong snapshot is not fixed by
+recording a right one after it: the wrong figure stays in the history, and
+the next interval reports the opposite gap. Corrections are SB-703.
+
+### 10.3 Bonus credit is not cash
+
+`bonus_staked` never enters the equation: free-bet credit was never in the
+cash balance, so spending it moves no cash. `bonus_balance` is stored because
+operators show it beside the cash figure, but it is not reconciled — credit is
+awarded, consumed and expires without any cash event to account for it.
+
+A free bet's *winnings* are cash. Under 5.1 they are stored as
+`cash_returned`, so they enter the equation like any other return.
+
+### 10.4 Across accounts
+
+`bet balance` prints one row per account, then a `TOTAL` row: the sum of each
+account's latest balance and lifetime net deposited (deposits less
+withdrawals up to that snapshot), and of the latest-interval deposits and
+withdrawals of the accounts that have an interval (a baseline contributes
+none). The `TOTAL` `cumulative_gap` is the sum of the account cumulative gaps.
+Other interval figures (previous balance, change, stake, return, expected,
+interval gap) span a different interval per account, so `TOTAL` leaves them
+blank. `TOTAL` reads `GAP` if any account's cumulative gap is non-zero -- in
+`--history` too, whatever the last interval rows say -- so offsetting gaps
+cannot hide.
+
+The table hides the interval diagnostics (previous balance, stake, return,
+expected, and -- outside `--history` -- the interval gap) unless `--verbose`
+is given, and folds over-wide cells rather than cutting them short.
+`--format json` and `csv` always carry every column.
+
+### 10.5 Worked example
+
+```
+snapshot   t0                  cash_balance 100.00
+deposit    t0 < d  <= t1       amount        50.00
+bet        placed in interval  cash_staked   10.00   (still open at t1)
+bet        settled in interval cash_returned 25.00   (placed before t0)
+withdrawal t0 < w  <= t1       amount        20.00
+
+expected = 100.00 + 50.00 - 20.00 - 10.00 + 25.00 = 145.00
+snapshot   t1                  cash_balance 140.00
+gap      = 140.00 - 145.00                         = -5.00   -> GAP
+```
+
+Five dollars left the account that the warehouse cannot explain: most likely
+a bet placed in the interval that was never captured.

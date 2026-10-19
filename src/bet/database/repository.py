@@ -21,10 +21,12 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
 from bet.errors import DatabaseError, NotFoundError
+from bet.models.balance import BalanceSnapshot, CashFlow
 from bet.models.bet import Bet, BetLeg, BetLegGroup, BetPromotion, Promotion
 from bet.models.ownership import OwnedModel, OwnerScope, SportsbookAccount
 from bet.models.source import SourceFile
@@ -307,6 +309,34 @@ class BetRepository(ScopedRepository[Bet]):
         names = [d[0] for d in cursor.description or []]
         return [self._build(dict(zip(names, row, strict=True))) for row in cursor.fetchall()]
 
+    def reconciliation_inputs(
+        self, account_id: UUID, after: datetime, through: datetime
+    ) -> tuple[Decimal, Decimal]:
+        """(cash staked, cash returned) on one account over ``(after, through]``.
+
+        What a balance reconciliation needs from the bet ledger (SB-1333):
+        cash leaves the account when a bet is placed and comes back when it
+        settles, so stake is bucketed by ``placed_at`` and return by
+        ``settled_at``, independently. A bet placed before the interval and
+        settled inside it contributes its return only -- its stake is already
+        reflected in the opening balance.
+
+        Cash only. Bonus stake never left the cash balance, so it is not
+        here; a free bet's winnings are cash, and arrive in ``cash_returned``
+        like any other. Current versions only, as everywhere.
+        """
+        row = self._conn.execute(
+            "SELECT "
+            "coalesce(sum(cash_staked) FILTER (WHERE placed_at > ? AND placed_at <= ?), 0), "
+            "coalesce(sum(cash_returned) FILTER "
+            "(WHERE status = 'settled' AND settled_at > ? AND settled_at <= ?), 0) "
+            f"FROM core.bet WHERE {self._scoped('is_current AND sportsbook_account_id = ?')}",
+            [after, through, after, through, *self._scope_params(), str(account_id)],
+        ).fetchone()
+        if row is None:  # pragma: no cover - an aggregate always returns a row
+            return Decimal(0), Decimal(0)
+        return Decimal(row[0]), Decimal(row[1])
+
     def provenance(self, bet_id: UUID) -> dict[str, Any]:
         """Where a bet came from: capture method, import run, source record, profile.
 
@@ -337,6 +367,37 @@ class SourceFileRepository(ScopedRepository[SourceFile]):
         """Look a file up by content, so re-archiving the same bytes is a no-op."""
         rows = self._rows("sha256 = ?", [sha256])
         return self._build(rows[0]) if rows else None
+
+
+class BalanceSnapshotRepository(ScopedRepository[BalanceSnapshot]):
+    table = "core.balance_snapshot"
+    model = BalanceSnapshot
+
+    def for_account(self, account_id: UUID) -> list[BalanceSnapshot]:
+        """Oldest first. ``created_at`` breaks a tie between equal observations."""
+        return [
+            self._build(r)
+            for r in self._rows(
+                "sportsbook_account_id = ?",
+                [str(account_id)],
+                order_by="observed_at, created_at, id",
+            )
+        ]
+
+
+class CashFlowRepository(ScopedRepository[CashFlow]):
+    table = "core.cash_flow"
+    model = CashFlow
+
+    def for_account(self, account_id: UUID) -> list[CashFlow]:
+        return [
+            self._build(r)
+            for r in self._rows(
+                "sportsbook_account_id = ?",
+                [str(account_id)],
+                order_by="occurred_at, created_at, id",
+            )
+        ]
 
 
 class BetLegRepository(ScopedRepository[BetLeg]):
@@ -389,6 +450,8 @@ OWNED_REPOSITORIES: tuple[type[ScopedRepository[Any]], ...] = (
     BetLegGroupRepository,
     PromotionRepository,
     BetPromotionRepository,
+    BalanceSnapshotRepository,
+    CashFlowRepository,
 )
 
 
@@ -409,6 +472,8 @@ class Warehouse:
         self.leg_groups = BetLegGroupRepository(conn, scope)
         self.promotions = PromotionRepository(conn, scope)
         self.bet_promotions = BetPromotionRepository(conn, scope)
+        self.balances = BalanceSnapshotRepository(conn, scope)
+        self.cash_flows = CashFlowRepository(conn, scope)
 
     @property
     def scope(self) -> OwnerScope:
@@ -438,10 +503,12 @@ class Warehouse:
 
 __all__ = [
     "OWNED_REPOSITORIES",
+    "BalanceSnapshotRepository",
     "BetLegGroupRepository",
     "BetLegRepository",
     "BetPromotionRepository",
     "BetRepository",
+    "CashFlowRepository",
     "PromotionRepository",
     "ScopedRepository",
     "SportsbookAccountRepository",

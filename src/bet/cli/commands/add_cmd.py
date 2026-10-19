@@ -20,8 +20,8 @@ bet-guard: synthetic-amounts
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, get_args
 from uuid import uuid4
@@ -30,12 +30,20 @@ import typer
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
+from bet.cli.capture import (
+    check_provenance,
+    new_account,
+    parse_capture_method,
+    parse_money,
+    parse_timestamp,
+    resolve_account,
+)
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
 from bet.database import identity
 from bet.database.connection import connect
-from bet.database.repository import Warehouse, known_sportsbook_codes
+from bet.database.repository import Warehouse
 from bet.errors import UsageError
 from bet.models.bet import (
     MULTI_LEG,
@@ -59,10 +67,17 @@ console = Console()
 FOUR_PLACES = Decimal("0.0001")
 TWO_PLACES = Decimal("0.01")
 
-CAPTURE_METHODS: tuple[str, ...] = get_args(CaptureMethod)
 WAGER_KINDS: tuple[str, ...] = get_args(WagerKind)
 PROMOTION_TYPES: tuple[str, ...] = get_args(PromotionType)
 PROMOTION_SCOPES: tuple[str, ...] = get_args(PromotionScope)
+
+# Shared with the balance and cash-flow commands since SB-1333 (bet.cli.capture),
+# kept here under their original names for this module and its tests.
+_parse_money = parse_money
+_parse_capture_method = parse_capture_method
+_check_provenance = check_provenance
+_resolve_account = resolve_account
+_new_account = new_account
 
 
 # ---------------------------------------------------------------- odds math
@@ -118,37 +133,8 @@ def _parse_odds(raw: str) -> int:
     return value
 
 
-def _parse_money(raw: str, *, field_name: str) -> Decimal:
-    try:
-        value = Decimal(raw).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-    except InvalidOperation as exc:
-        raise UsageError(f"{raw!r} is not a valid amount for {field_name}.") from exc
-    if value < 0:
-        raise UsageError(f"{field_name} cannot be negative.")
-    return value
-
-
 def _parse_placed_at(raw: str | None) -> datetime:
-    if raw is None:
-        return datetime.now(UTC)
-    try:
-        value = datetime.fromisoformat(raw)
-    except ValueError as exc:
-        raise UsageError(
-            f"{raw!r} is not a valid --placed-at timestamp.",
-            remediation="Use ISO 8601, e.g. 2026-09-08T19:30:00-04:00.",
-        ) from exc
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
-def _parse_capture_method(raw: str) -> CaptureMethod:
-    value = raw.strip().lower()
-    if value not in CAPTURE_METHODS:
-        raise UsageError(
-            f"{raw!r} is not a known capture method.",
-            remediation="Known methods: " + ", ".join(sorted(CAPTURE_METHODS)),
-        )
-    return value  # type: ignore[return-value]
+    return parse_timestamp(raw, option="--placed-at")
 
 
 def _parse_wager_kind(raw: str, *, leg_count: int) -> WagerKind:
@@ -202,40 +188,6 @@ def _ticket_odds(legs: list[BetLeg], explicit: str | None) -> tuple[int, Decimal
         )
     combined = combined_decimal_odds(priced)
     return decimal_to_american(combined), combined
-
-
-def _check_provenance(capture_method: CaptureMethod, source_file: Path | None) -> None:
-    """Refuse the incoherent combination; warn about the merely incomplete one.
-
-    ``manual`` means a human typed the numbers. A file it was captured from is
-    a contradiction, not extra detail, so it is an error rather than something
-    to quietly accept.
-
-    A path that is not a file fails here too, before the warehouse is opened
-    and before any prompting, rather than from inside the write transaction
-    where it would surface as a rollback rather than as bad input.
-
-    The reverse — a transcribed bet with nothing archived — is a real loss but
-    not a contradiction: the screenshot may genuinely be gone. It warns, so the
-    bet is still recorded and the gap is visible, because refusing it would
-    cost the bet as well as the evidence.
-    """
-    if source_file is not None and capture_method == "manual":
-        raise UsageError(
-            "--source-file contradicts --capture-method manual.",
-            remediation="A manually typed bet was not captured from a file. Pass "
-            "--capture-method screenshot (or pdf, statement, export) alongside it.",
-        )
-    if source_file is not None and not source_file.expanduser().is_file():
-        raise UsageError(
-            f"{source_file} is not a file.",
-            remediation="Pass --source-file the path to the screenshot or statement.",
-        )
-    if source_file is None and capture_method != "manual":
-        console.print(
-            f"[yellow]Warning:[/yellow] recording a {capture_method} bet with no --source-file. "
-            "Nothing will be archived, so these figures cannot be checked against their source."
-        )
 
 
 # --------------------------------------------------------------- leg parsing
@@ -429,67 +381,6 @@ def _promotion_from_fields(
 
 
 # ------------------------------------------------------------ account lookup
-
-
-def _resolve_account(
-    w: Warehouse,
-    conn: DuckDBPyConnection,
-    *,
-    sportsbook_code: str,
-    account_label: str | None,
-    interactive: bool,
-) -> tuple[SportsbookAccount, bool]:
-    """Find the account a bet attaches to, creating one if none exists yet.
-
-    Reads only — a newly constructed account is written by the caller inside
-    the same transaction as the bet, so aborting at the confirm prompt leaves
-    the warehouse untouched. There is no ``sportsbook accounts create``
-    command yet (SB-701), so this is the only way one gets made today.
-    """
-    known = known_sportsbook_codes(conn)
-    if sportsbook_code not in known:
-        raise UsageError(
-            f"{sportsbook_code!r} is not a known sportsbook.",
-            remediation="Known sportsbooks: " + ", ".join(sorted(known)),
-        )
-
-    accounts = w.accounts.for_sportsbook(sportsbook_code)
-
-    if account_label:
-        for account in accounts:
-            if account.label == account_label:
-                return account, False
-        if not interactive:
-            return _new_account(w, sportsbook_code, account_label), True
-    elif len(accounts) == 1:
-        return accounts[0], False
-    elif len(accounts) > 1:
-        if not interactive:
-            raise UsageError(
-                f"multiple {sportsbook_code} accounts exist.",
-                remediation="Disambiguate with --account-label. Known labels: "
-                + ", ".join(a.label for a in accounts),
-            )
-        chosen = Prompt.ask(f"Account for {sportsbook_code}", choices=[a.label for a in accounts])
-        return next(a for a in accounts if a.label == chosen), False
-
-    if account_label:
-        label = account_label
-    elif interactive:
-        label = Prompt.ask("Account label", default=sportsbook_code)
-    else:
-        label = sportsbook_code
-    return _new_account(w, sportsbook_code, label), True
-
-
-def _new_account(w: Warehouse, sportsbook_code: str, label: str) -> SportsbookAccount:
-    return SportsbookAccount(
-        tenant_id=w.scope.tenant_id,
-        user_id=w.scope.user_id,
-        id=uuid4(),
-        sportsbook_code=sportsbook_code,
-        label=label,
-    )
 
 
 def _recall_defaults(w: Warehouse) -> tuple[str | None, str | None]:

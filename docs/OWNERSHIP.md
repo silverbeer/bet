@@ -34,7 +34,7 @@ new table is added.
 
 | Schema | Tables |
 |---|---|
-| `core` | `sportsbook_account`, `bet`, `bet_leg`, `promotion`, `bet_promotion`, `bet_correction` |
+| `core` | `sportsbook_account`, `bet`, `bet_leg`, `promotion`, `bet_promotion`, `bet_correction`, `balance_snapshot`, `cash_flow` |
 | `control` | `import_run`, `source_file`, `validation_issue`, `reconciliation_result` |
 | `raw` | `source_record`, `extraction_candidate` |
 | `analytics` | `analysis_run`, `strategy`, `strategy_version`, `strategy_evaluation`, `finding`, `recommendation` |

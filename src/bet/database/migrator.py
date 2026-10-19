@@ -190,6 +190,22 @@ def pending(conn: DuckDBPyConnection, directory: Path | None = None) -> list[Mig
     return [m for m in discover(resolved) if m.version not in done]
 
 
+def require_current(conn: DuckDBPyConnection, directory: Path | None = None) -> None:
+    """Raise if any migration is pending -- the check ``bet doctor`` reports as a warning.
+
+    For commands whose tables arrived in a recent migration: against an older
+    warehouse they would otherwise fail on a missing table, reported as a bug
+    or as bad input rather than as the one step that fixes it.
+    """
+    outstanding = pending(conn, directory)
+    if outstanding:
+        listed = ", ".join(f"{m.version:04d}_{m.name}" for m in outstanding)
+        raise DatabaseError(
+            f"the warehouse schema is out of date; pending: {listed}.",
+            remediation="Run `bet init` to apply pending migrations.",
+        )
+
+
 def current_version(conn: DuckDBPyConnection) -> int | None:
     """The highest applied migration version, or None on an empty database."""
     records = applied(conn)
