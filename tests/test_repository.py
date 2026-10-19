@@ -30,6 +30,7 @@ from bet.database.repository import (
     Warehouse,
 )
 from bet.errors import DatabaseError, NotFoundError
+from bet.models.balance import BalanceSnapshot, CashFlow
 from bet.models.bet import Bet, BetLeg, BetPromotion, Promotion
 from bet.models.ownership import OwnerScope, SportsbookAccount
 
@@ -102,7 +103,9 @@ def test_a_repository_cannot_be_constructed_without_a_scope() -> None:
             repo(None)  # type: ignore[call-arg,arg-type]
 
 
-@pytest.mark.parametrize("repo_name", ["accounts", "bets", "legs", "promotions"])
+@pytest.mark.parametrize(
+    "repo_name", ["accounts", "bets", "legs", "promotions", "balances", "cash_flows"]
+)
 def test_one_user_never_sees_another_users_rows(
     two_users: tuple[duckdb.DuckDBPyConnection, Warehouse, Warehouse], repo_name: str
 ) -> None:
@@ -127,6 +130,27 @@ def test_one_user_never_sees_another_users_rows(
                 id=uuid.uuid4(),
                 sportsbook_code="fanduel",
                 promotion_type="profit_boost",
+            )
+        )
+        w.balances.add(
+            BalanceSnapshot(
+                tenant_id=w.scope.tenant_id,
+                user_id=w.scope.user_id,
+                id=uuid.uuid4(),
+                sportsbook_account_id=account.id,
+                observed_at=PLACED,
+                cash_balance=Decimal("25.00"),
+            )
+        )
+        w.cash_flows.add(
+            CashFlow(
+                tenant_id=w.scope.tenant_id,
+                user_id=w.scope.user_id,
+                id=uuid.uuid4(),
+                sportsbook_account_id=account.id,
+                kind="deposit",
+                occurred_at=PLACED,
+                amount=Decimal("5.00"),
             )
         )
         assert account.id is not None
