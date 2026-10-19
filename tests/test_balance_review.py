@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -220,7 +221,9 @@ class TestLocalAt:
     @pytest.mark.parametrize("command", [("balance", "add"), ("deposit",), ("withdraw",)])
     def test_help_states_the_local_time_zone(self, command: tuple[str, ...]) -> None:
         result = _ok(*command, "--help")
-        text = " ".join(result.stdout.replace("│", " ").split())
+        # CI renders help with ANSI styling, which can split the phrase.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        text = " ".join(plain.replace("│", " ").split())
         assert "local time zone" in text
 
 
