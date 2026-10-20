@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from bet import __version__, log
 from bet.cli import tree
@@ -30,6 +31,11 @@ from bet.cli.commands.similar_cmd import similar as similar_command
 from bet.cli.context import AppContext, GlobalOptions
 from bet.config import OutputFormat, resolve
 from bet.errors import BetError
+
+# Typer 0.27 vendors click privately (typer._click); BadParameter's base is
+# click's UsageError, which also covers unknown commands/options and missing
+# required options. Reached through the public class to avoid the private path.
+ClickUsageError = cast("type[Exception]", typer.BadParameter.__base__)
 
 app = typer.Typer(
     name="bet",
@@ -130,7 +136,13 @@ def run() -> None:
         raise SystemExit(exc.exit_code) from exc
     except typer.Exit as exc:
         raise SystemExit(exc.exit_code) from exc
-    except (typer.BadParameter, typer.Abort) as exc:
+    except ClickUsageError as exc:
+        # Unknown command/option and missing required options, as well as
+        # BadParameter, are the user's input -- never a bug in BET.
+        console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+        console.print("Run `bet --help` for the available commands and options.")
+        raise SystemExit(64) from exc  # sysexits.h EX_USAGE
+    except typer.Abort as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise SystemExit(64) from exc  # sysexits.h EX_USAGE
     except KeyboardInterrupt:
