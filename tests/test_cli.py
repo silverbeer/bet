@@ -220,3 +220,21 @@ def test_config_path_directory_is_created_on_write() -> None:
     runner.invoke(app, ["config", "set", "default_format", "json"])
     path = Path(runner.invoke(app, ["config", "path"]).stdout.strip())
     assert path.is_file()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["card"],  # unknown command
+        ["list", "--nope"],  # unknown option
+        ["deposit", "--sportsbook", "fanduel"],  # missing required --amount
+        ["list", "--limit", "many"],  # bad parameter value
+    ],
+)
+def test_input_mistakes_are_usage_errors_not_bugs(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert exit_code_of(argv, monkeypatch) == 64
+    err = capsys.readouterr().err
+    assert "bug in BET" not in err
+    assert "bet --help" in err
