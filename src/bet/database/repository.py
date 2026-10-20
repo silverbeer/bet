@@ -244,6 +244,7 @@ class BetRepository(ScopedRepository[Bet]):
         is_open: bool = False,
         sportsbook_code: str | None = None,
         sport: str | None = None,
+        wager_kind: str | None = None,
         text: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
@@ -275,6 +276,9 @@ class BetRepository(ScopedRepository[Bet]):
         if sportsbook_code is not None:
             clauses.append("a.sportsbook_code = ?")
             params.append(sportsbook_code)
+        if wager_kind is not None:
+            clauses.append("b.wager_kind = ?")
+            params.append(wager_kind)
         if sport is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM core.bet_leg l WHERE l.tenant_id = b.tenant_id "
