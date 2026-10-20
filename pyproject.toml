@@ -78,6 +78,9 @@ addopts = [
     "--cov-report=term-missing:skip-covered",
     "--cov-fail-under=90",
 ]
+# Each run builds many temp warehouses; keep only those of failing tests.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
 
 [tool.coverage.run]
 source = ["src/bet"]

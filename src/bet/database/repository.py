@@ -248,6 +248,8 @@ class BetRepository(ScopedRepository[Bet]):
         text: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        settled_since: datetime | None = None,
+        settled_until: datetime | None = None,
         limit: int | None = None,
     ) -> list[Bet]:
         """Filtered listing for ``bet list`` (SB-812) and ``bets search`` (SB-745).
@@ -263,6 +265,10 @@ class BetRepository(ScopedRepository[Bet]):
         event). It is not entity resolution -- there is no controlled
         vocabulary yet to resolve against (SB-747, SB-768) -- just a search
         over what a screenshot or manual entry actually typed.
+
+        ``since``/``until`` bound ``placed_at``; ``settled_since``/
+        ``settled_until`` bound ``settled_at`` (both inclusive), and drop
+        bets with no settle time.
         """
         columns = ", ".join(f"b.{c}" for c in self.columns())
         clauses = ["b.tenant_id = ?", "b.user_id = ?", "b.is_current"]
@@ -299,6 +305,12 @@ class BetRepository(ScopedRepository[Bet]):
         if until is not None:
             clauses.append("b.placed_at <= ?")
             params.append(until)
+        if settled_since is not None:
+            clauses.append("b.settled_at >= ?")
+            params.append(settled_since)
+        if settled_until is not None:
+            clauses.append("b.settled_at <= ?")
+            params.append(settled_until)
 
         sql = (
             f"SELECT {columns} FROM core.bet b "

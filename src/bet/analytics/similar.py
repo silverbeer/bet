@@ -25,16 +25,15 @@ row is ``insufficient``, below ``exploratory_below`` it is ``exploratory``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
+from bet.analytics._common import _money, _ratio
 from bet.models.bet import Bet, BetLeg
 
-RATIO_PLACES = Decimal("0.0001")
 TWO_PLACES = Decimal("0.01")
-ZERO = Decimal("0.00")
 
 COLUMNS = [
     "dimension",
@@ -113,19 +112,6 @@ def _flag(n: int, *, min_settled: int, exploratory_below: int) -> str:
     if n < exploratory_below:
         return "exploratory"
     return ""
-
-
-def _ratio(numerator: Decimal | int, denominator: Decimal | int) -> Decimal | None:
-    if not denominator:
-        return None
-    return (Decimal(numerator) / Decimal(denominator)).quantize(RATIO_PLACES, ROUND_HALF_UP)
-
-
-def _money(bets: Iterable[Bet]) -> tuple[int, Decimal, Decimal, Decimal | None]:
-    chosen = list(bets)
-    staked = sum((b.cash_staked for b in chosen), ZERO)
-    net = sum((b.net_profit or ZERO for b in chosen), ZERO)
-    return len(chosen), staked, net, _ratio(net, staked)
 
 
 def _leg_outcome(h: HistoricBet, leg: BetLeg) -> str | None:

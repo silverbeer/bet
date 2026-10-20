@@ -46,6 +46,15 @@ def existing_scope(conn: DuckDBPyConnection) -> OwnerScope | None:
     return OwnerScope(tenant_id=UUID(str(row[0])), user_id=UUID(str(row[1])))
 
 
+def user_timezone(conn: DuckDBPyConnection, scope: OwnerScope) -> str | None:
+    """The scoped user's stored display time zone, or ``None`` if the user is missing."""
+    row = conn.execute(
+        "SELECT timezone FROM core.user WHERE tenant_id = ? AND id = ?",
+        [str(scope.tenant_id), str(scope.user_id)],
+    ).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
 def bootstrap(conn: DuckDBPyConnection, *, display_name: str | None = None) -> OwnerScope:
     """Create the single local tenant and user if they do not already exist.
 

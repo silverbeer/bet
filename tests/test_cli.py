@@ -225,7 +225,7 @@ def test_config_path_directory_is_created_on_write() -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["card"],  # unknown command
+        ["frobnicate"],  # unknown command
         ["list", "--nope"],  # unknown option
         ["deposit", "--sportsbook", "fanduel"],  # missing required --amount
         ["list", "--limit", "many"],  # bad parameter value
