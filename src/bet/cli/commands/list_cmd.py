@@ -2,14 +2,14 @@
 
 Filters split two ways: sportsbook/sport/since/until are the shared
 ``GlobalOptions`` every analytical command takes (``bet --sportsbook fanduel
-list``), read from the Typer context rather than redeclared here. ``--open``
-and ``--status`` are specific to this command.
+list``), read from the Typer context rather than redeclared here. ``--open``,
+``--status`` and ``--kind`` are specific to this command.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time
-from typing import Annotated
+from typing import Annotated, get_args
 
 import typer
 
@@ -20,9 +20,10 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
-from bet.models.bet import Bet, BetLeg, BetStatus
+from bet.models.bet import Bet, BetLeg, BetStatus, WagerKind
 
 STATUSES: tuple[BetStatus, ...] = ("pending", "settled")
+KINDS: tuple[WagerKind, ...] = get_args(WagerKind)
 
 
 def _bounds(since: date | None, until: date | None) -> tuple[datetime | None, datetime | None]:
@@ -45,6 +46,7 @@ def _row(bet: Bet, account_label: str | None, legs: list[BetLeg]) -> dict[str, o
         "id": str(bet.id),
         "placed": bet.placed_at.date().isoformat(),
         "sportsbook": account_label or "",
+        "kind": bet.wager_kind,
         "selection": _selection_summary(legs),
         "odds": bet.odds_american_placed,
         "stake": bet.cash_staked + bet.bonus_staked,
@@ -59,6 +61,10 @@ def list_bets(
     status: Annotated[
         str | None, typer.Option("--status", help="Restrict to pending or settled.")
     ] = None,
+    kind: Annotated[
+        str | None,
+        typer.Option("--kind", help="Restrict to one wager kind, e.g. future or same_game_parlay."),
+    ] = None,
     limit: Annotated[int | None, typer.Option("--limit", help="Maximum rows.")] = None,
 ) -> None:
     """List bets, newest first."""
@@ -66,6 +72,11 @@ def list_bets(
         raise UsageError(
             f"{status!r} is not a known status.",
             remediation=f"Known statuses: {', '.join(STATUSES)}.",
+        )
+    if kind is not None and kind not in KINDS:
+        raise UsageError(
+            f"{kind!r} is not a known wager kind.",
+            remediation=f"Known kinds: {', '.join(KINDS)}.",
         )
     if open_ and status not in (None, "pending"):
         raise UsageError("--open and --status settled cannot both be given.")
@@ -84,6 +95,7 @@ def list_bets(
             is_open=open_,
             sportsbook_code=options.sportsbook,
             sport=options.sport,
+            wager_kind=kind,
             since=since,
             until=until,
             limit=limit,
@@ -95,7 +107,17 @@ def list_bets(
             legs = w.legs.for_bet(bet.id)
             rows.append(_row(bet, account.label if account else None, legs))
 
-    columns = ["id", "placed", "sportsbook", "selection", "odds", "stake", "status", "profit_loss"]
+    columns = [
+        "id",
+        "placed",
+        "sportsbook",
+        "kind",
+        "selection",
+        "odds",
+        "stake",
+        "status",
+        "profit_loss",
+    ]
     render(rows, columns=columns, fmt=fmt, title="bet list")
 
 

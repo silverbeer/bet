@@ -178,3 +178,73 @@ def test_list_rejects_an_unknown_status() -> None:
     runner.invoke(app, ["init"])
     result = runner.invoke(app, ["list", "--status", "nonsense"])
     assert isinstance(result.exception, UsageError)
+
+
+def _seed_future(w: Warehouse, account_id: uuid.UUID) -> Bet:
+    future = w.bets.add(
+        Bet(
+            tenant_id=w.scope.tenant_id,
+            user_id=w.scope.user_id,
+            id=uuid.uuid4(),
+            sportsbook_account_id=account_id,
+            placed_at=PLACED,
+            cash_staked=Decimal("10.00"),
+            wager_kind="future",
+        )
+    )
+    w.legs.add(
+        BetLeg(
+            tenant_id=w.scope.tenant_id,
+            user_id=w.scope.user_id,
+            id=uuid.uuid4(),
+            bet_id=future.id,
+            leg_order=1,
+            sport="NBA",
+            selection_name="Celtics To Win The East",
+            odds_american=400,
+        )
+    )
+    return future
+
+
+def test_list_filters_by_wager_kind(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        pending, _settled = _seed_two_bets(w)
+        future = _seed_future(w, pending.sportsbook_account_id)
+
+    result = runner.invoke(app, ["--format", "json", "list", "--kind", "future"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [r["id"] for r in rows] == [str(future.id)]
+    assert rows[0]["kind"] == "future"
+
+
+def test_list_kind_combines_with_open(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        pending, _settled = _seed_two_bets(w)
+        future = _seed_future(w, pending.sportsbook_account_id)
+
+    result = runner.invoke(app, ["--format", "json", "list", "--open", "--kind", "straight"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [r["id"] for r in rows] == [str(pending.id)]
+    assert str(future.id) not in result.stdout
+
+
+def test_list_shows_the_wager_kind_of_every_row(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        _seed_two_bets(w)
+
+    result = runner.invoke(app, ["--format", "json", "list"])
+    rows = json.loads(result.stdout)
+    assert {r["kind"] for r in rows} == {"straight"}
+
+
+def test_list_rejects_an_unknown_kind() -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["list", "--kind", "futures"])
+    assert isinstance(result.exception, UsageError)
+    assert "future" in (result.exception.remediation or "")
