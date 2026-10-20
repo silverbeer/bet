@@ -13,6 +13,7 @@ from typing import Annotated, get_args
 
 import typer
 
+from bet.analytics.card import selection_summary
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
@@ -34,20 +35,13 @@ def _bounds(since: date | None, until: date | None) -> tuple[datetime | None, da
     return start, end
 
 
-def _selection_summary(legs: list[BetLeg]) -> str:
-    if not legs:
-        return ""
-    first = legs[0].selection_name or "?"
-    return first if len(legs) == 1 else f"{first} +{len(legs) - 1} more"
-
-
 def _row(bet: Bet, account_label: str | None, legs: list[BetLeg]) -> dict[str, object]:
     return {
         "id": str(bet.id),
         "placed": bet.placed_at.date().isoformat(),
         "sportsbook": account_label or "",
         "kind": bet.wager_kind,
-        "selection": _selection_summary(legs),
+        "selection": selection_summary(legs),
         "odds": bet.odds_american_placed,
         "stake": bet.cash_staked + bet.bonus_staked,
         "status": bet.result if bet.status == "settled" else bet.status,

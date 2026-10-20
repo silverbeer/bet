@@ -61,6 +61,25 @@ warehouse lives, and moving it later means moving the database and the source
 archive with it. The default is `~/.local/share/bet`. Any path inside a git work
 tree is refused outright.
 
+## Bet card
+
+```bash
+bet card                 # last 7 local days, by settle date
+bet card --days 3
+bet card --share         # no dollar amounts: record, ROI and odds only
+bet --sportsbook fanduel card
+```
+
+A screenshot-sized summary: record, net and cash ROI, a daily breakdown with
+bars, a by-sport breakdown (a ticket whose legs span sports counts once, as
+`MULTI`), the current streak, the best hit, pending exposure, and each
+account's latest balance with its change since the window opened (change
+excludes deposits and withdrawals). `--share` hides every dollar figure so the
+card can be sent to friends. Days are in the user's configured time zone, or
+this machine's when none is set. Pushes count in ROI; voids never do
+(`--include-void` adds a void count). `--format json` gives the same card as
+one object; `--since`/`--until` and `--format csv` are refused.
+
 ## Planning documents
 
 - [`docs/PRD.md`](docs/PRD.md) — product vision and the questions BET must answer
