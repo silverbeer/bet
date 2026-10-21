@@ -12,6 +12,7 @@ never markup: a selection like ``[Over]`` must print as written.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TextIO
 
@@ -205,13 +206,16 @@ def _balances(card: Card) -> Table:
     grid.add_column(justify="right", no_wrap=True)
     grid.add_column(no_wrap=True)
 
-    def change(value: Decimal | None) -> Text:
+    def change(value: Decimal | None, since: datetime | None = None) -> Text:
         if value is None:
             return Text("(new)", style="dim")
-        return Text(f"({money(value, signed=True)})", style=_tone(value))
+        text = Text(money(value, signed=True), style=_tone(value))
+        if since is not None:
+            text.append(f" since {since:%b} {since.day}", style="dim")
+        return text
 
     for a in card.balances:
-        grid.add_row(Text(f" {a.account}"), Text(money(a.balance)), change(a.change))
+        grid.add_row(Text(f" {a.account}"), Text(money(a.balance)), change(a.change, a.since))
     if len(card.balances) > 1:
         grid.add_row(
             Text(" TOTAL", style="bold"),

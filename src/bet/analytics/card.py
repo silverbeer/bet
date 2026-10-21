@@ -20,7 +20,10 @@ in the win/loss record -- it was a pick -- but contributes no money, so
 only a cash bet can be the best hit: its net is money that is in NET.
 
 A balance's change is what betting did to it: the balance delta since the
-window opened, less the deposits and withdrawals made over that span.
+window opened, less the deposits and withdrawals made over that span. An
+account first snapshotted inside the window is measured from that first
+snapshot instead, and ``since`` says so; one with a single snapshot has no
+change to show.
 
 Pure: no database.
 """
@@ -86,10 +89,14 @@ class AccountBalance:
     account: str
     balance: Decimal
     observed_at: datetime
-    # Latest balance less the latest one at or before the window opened, net
-    # of deposits and withdrawals between the two; ``None`` when the account
-    # has no snapshot that old.
+    # Latest balance less a baseline -- the latest snapshot at or before the
+    # window opened, else the earliest one inside it -- net of deposits and
+    # withdrawals between the two; ``None`` when the account has only one
+    # snapshot to go on.
     change: Decimal | None
+    # When the baseline was taken, in the card's zone; ``None`` exactly when
+    # ``change`` is.
+    since: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -253,6 +260,7 @@ def _balances(
     snapshots: Mapping[str, Sequence[BalanceSnapshot]],
     flows: Mapping[str, Sequence[CashFlow]],
     opened: datetime,
+    tz: tzinfo,
 ) -> list[AccountBalance]:
     rows: list[AccountBalance] = []
     for account, snaps in snapshots.items():
@@ -260,12 +268,14 @@ def _balances(
             continue
         last = snaps[-1]
         before = [s for s in snaps if s.observed_at <= opened]
+        base = before[-1] if before else (snaps[0] if len(snaps) > 1 else None)
         rows.append(
             AccountBalance(
                 account=account,
                 balance=last.cash_balance,
                 observed_at=last.observed_at,
-                change=_change(last, before[-1] if before else None, flows.get(account, ())),
+                change=_change(last, base, flows.get(account, ())),
+                since=base.observed_at.astimezone(tz) if base is not None else None,
             )
         )
     return rows
@@ -314,7 +324,7 @@ def build_card(
     sport_rows = [SportRow(sport, record_of(group)) for sport, group in by_sport.items()]
     sport_rows.sort(key=lambda r: (-r.record.net, r.sport))
 
-    balances = _balances(snapshots, cash_flows or {}, start)
+    balances = _balances(snapshots, cash_flows or {}, start, tz)
     changes = [a.change for a in balances if a.change is not None]
     complete = bool(balances) and len(changes) == len(balances)
 
@@ -390,6 +400,7 @@ def card_to_dict(card: Card, *, share: bool = False) -> dict[str, Any]:
                 "balance": a.balance,
                 "observed_at": a.observed_at,
                 "change": a.change,
+                "since": a.since,
             }
             for a in card.balances
         ]

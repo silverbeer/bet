@@ -553,6 +553,12 @@ def test_cli_rejects_csv(seeded: Path) -> None:
     assert isinstance(result.exception, UsageError)
 
 
+def test_cli_days_short_flag(seeded: Path) -> None:
+    out = _json("card", "-d", "14")
+    assert len(out["by_day"]) == 14
+    assert len(_json("card")["by_day"]) == 7
+
+
 def test_cli_rejects_days_out_of_range(seeded: Path) -> None:
     assert runner.invoke(app, ["card", "--days", "0"]).exit_code != 0
     assert runner.invoke(app, ["card", "--days", "61"]).exit_code != 0

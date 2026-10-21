@@ -81,7 +81,7 @@ def card(
     ctx: typer.Context,
     days: Annotated[
         int,
-        typer.Option("--days", min=1, max=60, help="Local days to cover, ending today."),
+        typer.Option("--days", "-d", min=1, max=60, help="Local days to cover, ending today."),
     ] = 7,
     share: Annotated[
         bool,
