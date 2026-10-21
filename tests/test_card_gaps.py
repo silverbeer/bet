@@ -24,7 +24,7 @@ from bet.analytics.card import (
 )
 from bet.cli.card_render import BAR, FIRE, card_panel, render_card
 from bet.cli.commands import card_cmd
-from bet.models.balance import BalanceSnapshot
+from bet.models.balance import BalanceSnapshot, CashFlow
 from bet.models.bet import Bet, BetLeg
 
 NY = ZoneInfo("America/New_York")
@@ -214,6 +214,56 @@ class TestBalanceBaseline:
         card = _card([], snapshots=snaps)
         assert card.balances[0].change is None
         assert card.balance_change is None
+
+    def test_first_snapshot_inside_the_window_is_the_baseline(self) -> None:
+        start = window_bounds(TODAY, 7, NY)[0]
+        first = start + timedelta(days=2)
+        snaps = {"fanduel": [_snap(first, "100.00"), _snap(first + timedelta(days=2), "130.00")]}
+        card = _card([], snapshots=snaps)
+        assert card.balances[0].change == Decimal("30.00")
+        since = card.balances[0].since
+        assert since == first
+        assert since is not None and since.tzinfo == NY
+        assert card.balance_change == Decimal("30.00")
+
+    def test_in_window_baseline_still_excludes_deposits(self) -> None:
+        start = window_bounds(TODAY, 7, NY)[0]
+        first = start + timedelta(days=1)
+        snaps = {"fanduel": [_snap(first, "100.00"), _snap(first + timedelta(days=3), "180.00")]}
+        deposit = CashFlow(
+            tenant_id=TENANT,
+            user_id=USER,
+            id=uuid.uuid4(),
+            sportsbook_account_id=uuid.uuid4(),
+            kind="deposit",
+            occurred_at=first + timedelta(days=1),
+            amount=Decimal("50.00"),
+        )
+        card = _card([], snapshots=snaps, cash_flows={"fanduel": [deposit]})
+        assert card.balances[0].change == Decimal("30.00")
+
+    def test_baseline_before_the_window_wins_over_one_inside(self) -> None:
+        start = window_bounds(TODAY, 7, NY)[0]
+        snaps = {
+            "fanduel": [
+                _snap(start - timedelta(days=1), "90.00"),
+                _snap(start + timedelta(days=1), "100.00"),
+                _snap(start + timedelta(days=2), "110.00"),
+            ]
+        }
+        card = _card([], snapshots=snaps)
+        assert card.balances[0].change == Decimal("20.00")
+        assert card.balances[0].since == start - timedelta(days=1)
+
+    def test_since_renders_beside_the_change(self) -> None:
+        start = window_bounds(TODAY, 7, NY)[0]
+        first = datetime(2026, 10, 16, 12, 0, tzinfo=NY)
+        snaps = {"fanduel": [_snap(first, "100.00"), _snap(start + timedelta(days=5), "125.00")]}
+        card = _card([], snapshots=snaps)
+        buf = io.StringIO()
+        render_card(card, stream=buf)
+        assert "+$25.00 since Oct 16" in buf.getvalue()
+        assert card_to_dict(card)["balances"][0]["since"] == first
 
     def test_account_with_no_snapshots_is_omitted(self) -> None:
         card = _card([], snapshots={"fanduel": []})

@@ -65,7 +65,7 @@ tree is refused outright.
 
 ```bash
 bet card                 # last 7 local days, by settle date
-bet card --days 3
+bet card -d 14            # short for --days (1-60)
 bet card --share         # no dollar amounts: record, ROI and odds only
 bet --sportsbook fanduel card
 ```
@@ -73,8 +73,9 @@ bet --sportsbook fanduel card
 A screenshot-sized summary: record, net and cash ROI, a daily breakdown with
 bars, a by-sport breakdown (a ticket whose legs span sports counts once, as
 `MULTI`), the current streak, the best hit, pending exposure, and each
-account's latest balance with its change since the window opened (change
-excludes deposits and withdrawals). `--share` hides every dollar figure so the
+account's latest balance with its change since the window opened -- or since
+its first snapshot, when that falls inside the window -- labelled with the date
+it is measured from (change excludes deposits and withdrawals). `--share` hides every dollar figure so the
 card can be sent to friends. Days are in the user's configured time zone, or
 this machine's when none is set. Pushes count in ROI; voids never do
 (`--include-void` adds a void count). `--format json` gives the same card as
