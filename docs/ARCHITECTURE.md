@@ -95,8 +95,13 @@ Provide decision support using historical betting performance, market data, and 
 
 **Single-user product, multi-user schema.**
 
-BET serves one person. There is no login, no sharing, no social feature, and no
-second user on the roadmap as a commitment.
+BET serves one person. There is no sharing, no social feature, and no second
+user on the roadmap as a commitment.
+
+**Amended by [ADR 0002](decisions/0002-api-service.md) (2026-10-23):** BET 2.0
+adds a FastAPI service with BET-issued JWT login. It is *multi-user capable* —
+a second, operator-invited user is fully isolated — but there is still no
+signup, sharing or social feature.
 
 The *schema* is nonetheless multi-user from the first migration: `tenant_id` and
 `user_id` are carried on every owned record. Those two columns are cheap to add
@@ -141,6 +146,12 @@ Primary datastore:
 
 Avoid cloud dependencies in MVP.
 
+**Amended by [ADR 0002](decisions/0002-api-service.md):** "local" means
+*self-hosted* — data stays on hardware the author owns. From BET 2.0 the
+warehouse lives on a home server (k3s on a Mac mini) behind the BET API, reached
+over Tailscale; no cloud service holds it. The CLI keeps a local mode that opens
+a warehouse file directly.
+
 ---
 
 ## Automation First
@@ -159,7 +170,8 @@ Manual entry should be considered a fallback.
 
 ## CLI First
 
-CLI is the primary interface.
+CLI is the primary interface. In BET 2.0 it can run against the BET API
+(remote mode) or a local file (local mode); the Rich output is identical.
 
 Future dashboards are optional.
 
@@ -208,8 +220,9 @@ The architecture must allow additional sportsbooks to be added later.
 
 Python 3.14+
 
-Pinned to 3.14 in `.python-version`. BET is a single-user local-first product,
-so there is no environment outside the author's to support; declaring a lower
+Pinned to 3.14 in `.python-version`. BET runs only on the author's machines
+(laptop, and the home server from BET 2.0), so there is no environment outside
+the author's to support; declaring a lower
 floor would mean shipping a version nothing is actually tested on.
 
 ## Package Management
@@ -729,7 +742,7 @@ Optional future capability.
 
 Potential stack:
 
-- FastAPI
+- FastAPI (already the API layer from BET 2.0 — see ADR 0002)
 - HTMX
 - Jinja
 

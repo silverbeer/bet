@@ -89,7 +89,7 @@ Recommended delivery sequence within the MVP:
 - PDF/screenshot extraction may produce false records and needs a review path.
 - Small samples and multiple comparisons can create misleading strategy findings.
 - Sports data is a separate product domain and can overwhelm the core project if placed on the ingestion critical path.
-- DuckDB suits local single-user analytics. A future concurrent hosted service needs a transactional authorization and write layer in addition to analytical storage.
+- DuckDB suits local single-user analytics. A future concurrent hosted service needs a transactional authorization and write layer in addition to analytical storage. *(Resolved by [ADR 0002](decisions/0002-api-service.md): that layer is the BET API — one FastAPI process embedding DuckDB, with JWT auth — not a second engine.)*
 
 ## 2. Multi-user, ownership, and shared intelligence
 
@@ -163,6 +163,11 @@ All user-owned records include `user_id`. In a future hosted deployment, all ten
 ### Future service boundary
 
 DuckDB remains appropriate for local data and analytical workloads.
+
+> **Resolved 2026-10-23 by [ADR 0002](decisions/0002-api-service.md):** no
+> second engine and no Quack. A single FastAPI process embeds DuckDB as the only
+> writer; identity is BET-issued JWTs over the existing ownership columns. The
+> text below is kept as the history of the question.
 
 **Whether a hosted deployment needs a second engine is an open question, not a settled one.** This document previously asserted that a hosted service would introduce a separate transactional database for identity, authorization, consent, concurrent writes, and social relationships. That assertion rested on DuckDB being single-process and embedded.
 
@@ -840,4 +845,4 @@ Implementation should not start until these are approved:
 2. Multi-user ownership, consent, sharing, and privacy policy.
 3. Representative sportsbook export samples and supported-format boundaries.
 4. Statistical thresholds and recommendation language policy.
-5. The local-first to hosted-service transition boundary.
+5. The local-first to hosted-service transition boundary. *(Decided: [ADR 0002](decisions/0002-api-service.md).)*
