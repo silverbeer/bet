@@ -26,9 +26,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import typer
 
-from bet.analytics.card import build_card, card_to_dict, window_bounds
+from bet.analytics.card import card_to_dict
 from bet.cli.card_render import render_card
-from bet.cli.commands.balance_cmd import account_name
 from bet.cli.context import options_from
 from bet.cli.output import _plain
 from bet.config import OutputFormat, resolve
@@ -36,8 +35,7 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
-from bet.models.balance import BalanceSnapshot, CashFlow
-from bet.models.bet import Bet, BetLeg
+from bet.services.card import CardQuery, card_summary
 
 
 def _named(key: str) -> tzinfo | None:
@@ -102,49 +100,18 @@ def card(
         )
 
     resolved = resolve()
-    code = (options.sportsbook or "").strip().lower() or None
 
     with connect(resolved.settings) as conn:
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
-        tz = _zone(identity.user_timezone(conn, scope))
-        today = datetime.now(tz).date()
-        start, end = window_bounds(today, days, tz)
-
-        # Bound by settle time in SQL so legs are fetched for the window only.
-        in_window = w.bets.search(
-            status="settled",
-            sportsbook_code=code,
+        query = CardQuery(
+            tz=_zone(identity.user_timezone(conn, scope)),
+            days=days,
+            sportsbook=options.sportsbook,
             sport=options.sport,
-            settled_since=start,
-            settled_until=end,
+            include_void=options.include_void,
         )
-        settled: list[tuple[Bet, list[BetLeg]]] = [
-            (bet, w.legs.for_bet(bet.id)) for bet in in_window
-        ]
-        pending = w.bets.search(is_open=True, sportsbook_code=code, sport=options.sport)
-        accounts = [
-            a
-            for a in w.accounts.fetch_all(order_by="sportsbook_code, label")
-            if code is None or a.sportsbook_code == code
-        ]
-        snapshots: dict[str, list[BalanceSnapshot]] = {
-            account_name(a): w.balances.for_account(a.id) for a in accounts
-        }
-        flows: dict[str, list[CashFlow]] = {
-            account_name(a): w.cash_flows.for_account(a.id) for a in accounts
-        }
+        result = card_summary(Warehouse(conn, scope), query)
 
-    result = build_card(
-        settled,
-        pending,
-        snapshots,
-        cash_flows=flows,
-        days=days,
-        today=today,
-        tz=tz,
-        include_void=options.include_void,
-    )
     if options.fmt is OutputFormat.JSON:
         json.dump(card_to_dict(result, share=share), sys.stdout, indent=2, default=_plain)
         sys.stdout.write("\n")
