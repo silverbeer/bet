@@ -193,6 +193,24 @@ in BET to justify evaluating this. Deferred entirely.
    LTS release, and whether Quack's production release changes the hosted-service
    boundary.
 
+   **GA follow-up, 2026-10-23 (SB-1393).** 2.0.0 shipped 2026-10-21.
+   - Storage version **69** is the new default for *new* files only. 2.0 reads
+     and writes existing 1.5 files without converting them; moving a file to 69
+     is an export/import. Verified on a copy of the real warehouse: 2.0 ran
+     `bet card` and `bet list` identically, and 1.5.5 reopened the copy
+     afterwards with all rows intact and the format still `v1.5.0+`.
+   - 2.0 is an LTS release (support until at least October 2027); 1.5 support
+     was extended to March 2027.
+   - The test suite passed 619 of 621 tests against 2.0.0. Both failures are one
+     call: `conn.sql(...).fetchone()` in `bet doctor` (relations lost
+     `fetchone()` in 2.0; `conn.execute(...)` works on both lines).
+   - Decision 3's non-blocking 2.0 CI job was never added to `ci.yml`; it would
+     have caught that break before GA.
+   - The hosted-service boundary is decided in
+     [ADR 0002](0002-api-service.md): Quack is not adopted.
+   - Upgrading the pin to 2.x is deferred to the first patch release (2.0.1),
+     as DuckDB itself advises for important data.
+
 ### Not chosen: start on the 1.4.x LTS line
 
 LTS is every other release from 1.4.0, so 1.5.x is not an LTS line. But 1.4.0's
