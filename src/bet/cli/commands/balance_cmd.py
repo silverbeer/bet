@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
-from uuid import uuid4
 
 import typer
 from rich.console import Console
@@ -34,10 +33,10 @@ from rich.markup import escape
 from bet.analytics.balance import COLUMNS, DIAGNOSTIC_COLUMNS
 from bet.cli.capture import (
     check_provenance,
+    markup_safe_labels,
     parse_capture_method,
     parse_local_timestamp,
     parse_money,
-    resolve_account,
 )
 from bet.cli.context import options_from
 from bet.cli.output import render
@@ -46,7 +45,6 @@ from bet.database import identity, migrator
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
-from bet.models.balance import BalanceSnapshot
 from bet.models.ownership import SportsbookAccount
 from bet.services.balance import (
     BalanceQuery,
@@ -54,7 +52,8 @@ from bet.services.balance import (
     balance_report,
     require_known_sportsbook,
 )
-from bet.sources import archive as archive_source
+from bet.services.ledger import BalanceSnapshotRequest, add_balance_snapshot
+from bet.services.sources import SourceToArchive
 
 # Notices go to stderr so they never share a stream with --format json/csv.
 notices = Console(stderr=True)
@@ -208,44 +207,31 @@ def add(
     bonus_balance = parse_money(bonus_amount, field_name="--bonus-amount") if bonus_amount else None
     observed_at = parse_local_timestamp(at, option="--at")
 
+    request = BalanceSnapshotRequest(
+        sportsbook=sportsbook,
+        account_label=account_label,
+        cash_balance=cash_balance,
+        bonus_balance=bonus_balance,
+        observed_at=observed_at,
+        capture_method=method,
+        notes=notes,
+    )
+
     with connect(resolved.settings) as conn:
         migrator.require_current(conn)
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
-        account, is_new = resolve_account(
-            w,
-            conn,
-            sportsbook_code=sportsbook,
-            account_label=account_label,
-            interactive=False,
-            strict_label=True,
-        )
-        snapshot = BalanceSnapshot(
-            tenant_id=scope.tenant_id,
-            user_id=scope.user_id,
-            id=uuid4(),
-            sportsbook_account_id=account.id,
-            observed_at=observed_at,
-            cash_balance=cash_balance,
-            bonus_balance=bonus_balance,
-            capture_method=method,
-            notes=notes,
-        )
-
         archive_dir = resolved.settings.source_archive_dir
         assert archive_dir is not None  # Settings derives it from data_dir
+        source = (
+            SourceToArchive(archive_dir=archive_dir, path=source_file)
+            if source_file is not None
+            else None
+        )
+        with markup_safe_labels():
+            recorded = add_balance_snapshot(Warehouse(conn, scope), request, source=source)
 
-        with w.transaction() as tx:
-            if source_file is not None:
-                archived = archive_source(
-                    tx, source_file, archive_dir=archive_dir, capture_method=method
-                )
-                snapshot.source_file_id = archived.id
-            if is_new:
-                tx.accounts.add(account)
-            tx.balances.add(snapshot)
-
-    if is_new:
+    account, snapshot = recorded.account, recorded.snapshot
+    if recorded.account_is_new:
         created_notice(account)
     row = {
         "id": str(snapshot.id),
