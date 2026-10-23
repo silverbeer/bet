@@ -13,16 +13,15 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
-from uuid import uuid4
 
 import typer
 
 from bet.cli.capture import (
     check_provenance,
+    markup_safe_labels,
     parse_capture_method,
     parse_local_timestamp,
     parse_money,
-    resolve_account,
 )
 from bet.cli.commands.balance_cmd import AT_HELP, account_name, created_notice
 from bet.cli.context import options_from
@@ -31,9 +30,9 @@ from bet.config import resolve
 from bet.database import identity, migrator
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
-from bet.errors import UsageError
-from bet.models.balance import CashFlow, CashFlowKind
-from bet.sources import archive as archive_source
+from bet.models.balance import CashFlowKind
+from bet.services.ledger import CashFlowRequest, record_cash_flow, require_moves_money
+from bet.services.sources import SourceToArchive
 
 COLUMNS = [
     "id",
@@ -96,49 +95,34 @@ def _record(
 
     method = parse_capture_method(capture_method)
     check_provenance(method, source_file, what=kind)
-    value = parse_money(amount, field_name="--amount")
-    if value == 0:
-        raise UsageError(f"a {kind} must move money: --amount must be greater than zero.")
+    # Checked again by the service; here so it is reported before --at is read.
+    value = require_moves_money(kind, parse_money(amount, field_name="--amount"))
     occurred_at = parse_local_timestamp(at, option="--at")
+    request = CashFlowRequest(
+        kind=kind,
+        sportsbook=sportsbook,
+        amount=value,
+        account_label=account_label,
+        occurred_at=occurred_at,
+        capture_method=method,
+        notes=notes,
+    )
 
     with connect(resolved.settings) as conn:
         migrator.require_current(conn)
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
-        account, is_new = resolve_account(
-            w,
-            conn,
-            sportsbook_code=sportsbook,
-            account_label=account_label,
-            interactive=False,
-            strict_label=True,
-        )
-        flow = CashFlow(
-            tenant_id=scope.tenant_id,
-            user_id=scope.user_id,
-            id=uuid4(),
-            sportsbook_account_id=account.id,
-            kind=kind,
-            occurred_at=occurred_at,
-            amount=value,
-            capture_method=method,
-            notes=notes,
-        )
-
         archive_dir = resolved.settings.source_archive_dir
         assert archive_dir is not None  # Settings derives it from data_dir
+        source = (
+            SourceToArchive(archive_dir=archive_dir, path=source_file)
+            if source_file is not None
+            else None
+        )
+        with markup_safe_labels():
+            recorded = record_cash_flow(Warehouse(conn, scope), request, source=source)
 
-        with w.transaction() as tx:
-            if source_file is not None:
-                archived = archive_source(
-                    tx, source_file, archive_dir=archive_dir, capture_method=method
-                )
-                flow.source_file_id = archived.id
-            if is_new:
-                tx.accounts.add(account)
-            tx.cash_flows.add(flow)
-
-    if is_new:
+    account, flow = recorded.account, recorded.cash_flow
+    if recorded.account_is_new:
         created_notice(account)
     row = {
         "id": str(flow.id),

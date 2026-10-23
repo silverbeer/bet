@@ -19,12 +19,11 @@ bet-guard: synthetic-amounts
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, get_args
-from uuid import uuid4
+from typing import Annotated
+from uuid import UUID
 
 import typer
 from rich.console import Console
@@ -32,11 +31,11 @@ from rich.prompt import Confirm, Prompt
 
 from bet.cli.capture import (
     check_provenance,
+    choose_account,
     new_account,
     parse_capture_method,
     parse_money,
     parse_timestamp,
-    resolve_account,
 )
 from bet.cli.context import options_from
 from bet.cli.output import render
@@ -45,259 +44,58 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
-from bet.models.bet import (
-    MULTI_LEG,
-    Bet,
-    BetLeg,
-    BetLegGroup,
-    BetPromotion,
-    CaptureMethod,
-    PromotionScope,
-    PromotionType,
-    WagerKind,
+from bet.models.bet import Bet, BetLeg, BetPromotion, CaptureMethod
+from bet.services.add import AddBetRequest, add_bet
+from bet.services.odds import (
+    american_to_decimal,
+    combined_decimal_odds,
+    decimal_to_american,
 )
-from bet.models.ownership import SportsbookAccount
-from bet.sources import archive as archive_source
-
-if TYPE_CHECKING:
-    from duckdb import DuckDBPyConnection
+from bet.services.sources import SourceToArchive
+from bet.services.specs import (
+    leg_input,
+    parse_leg_spec,
+    parse_odds,
+    parse_promo_spec,
+    promotion_input,
+)
+from bet.services.tickets import (
+    LegGroupInput,
+    LegInput,
+    build_leg,
+    build_promotion,
+    ticket_odds,
+    wager_kind_for,
+)
 
 console = Console()
 
-FOUR_PLACES = Decimal("0.0001")
 TWO_PLACES = Decimal("0.01")
 
-WAGER_KINDS: tuple[str, ...] = get_args(WagerKind)
-PROMOTION_TYPES: tuple[str, ...] = get_args(PromotionType)
-PROMOTION_SCOPES: tuple[str, ...] = get_args(PromotionScope)
-
-# Shared with the balance and cash-flow commands since SB-1333 (bet.cli.capture),
-# kept here under their original names for this module and its tests.
+# The rules moved to bet.services in SB-1395 (odds, tickets, specs) and the
+# shared capture helpers to bet.cli.capture in SB-1333; kept here under their
+# original names for this module's tests.
 _parse_money = parse_money
-_parse_capture_method = parse_capture_method
-_check_provenance = check_provenance
-_resolve_account = resolve_account
 _new_account = new_account
-
-
-# ---------------------------------------------------------------- odds math
-
-
-def american_to_decimal(odds_american: int) -> Decimal:
-    """Convert American odds to decimal odds, at 4 decimal places.
-
-    +100 and -100 both land on 2.0000 — the boundary where a bet exactly
-    doubles the stake sits between the two formats' sign conventions.
-    """
-    if odds_american > 0:
-        value = 1 + (Decimal(odds_american) / 100)
-    else:
-        value = 1 + (Decimal(100) / abs(Decimal(odds_american)))
-    return value.quantize(FOUR_PLACES, rounding=ROUND_HALF_UP)
-
-
-def decimal_to_american(odds_decimal: Decimal) -> int:
-    """The American-odds equivalent of a decimal price.
-
-    Gives combined parlay odds an American figure even though no sportsbook
-    publishes one for a multi-leg ticket directly — the product of the legs'
-    decimal prices, converted back the same way a single price would be.
-    """
-    value = (odds_decimal - 1) * 100 if odds_decimal >= 2 else Decimal(-100) / (odds_decimal - 1)
-    return int(value.to_integral_value(rounding=ROUND_HALF_UP))
-
-
-def combined_decimal_odds(leg_odds: list[Decimal]) -> Decimal:
-    """Ticket-level price: the product of its legs' decimal odds."""
-    product = Decimal(1)
-    for odds in leg_odds:
-        product *= odds
-    return product.quantize(FOUR_PLACES, rounding=ROUND_HALF_UP)
-
-
-def _leg_odds(legs: list[BetLeg]) -> list[Decimal]:
-    return [leg.odds_decimal for leg in legs if leg.odds_decimal is not None]
-
-
-def _parse_odds(raw: str) -> int:
-    text = raw.strip()
-    try:
-        value = int(text)
-    except ValueError as exc:
-        raise UsageError(f"{raw!r} is not a valid American odds value.") from exc
-    if -100 < value < 100:
-        raise UsageError(
-            f"{value} is not a valid American odds value.",
-            remediation="American odds are always >= 100 or <= -100.",
-        )
-    return value
+_parse_odds = parse_odds
+_parse_leg_spec = parse_leg_spec
+_parse_promo_spec = parse_promo_spec
+_parse_wager_kind = wager_kind_for
 
 
 def _parse_placed_at(raw: str | None) -> datetime:
     return parse_timestamp(raw, option="--placed-at")
 
 
-def _parse_wager_kind(raw: str, *, leg_count: int) -> WagerKind:
-    """Validate an explicit ``--wager-kind`` against the ticket it describes.
-
-    A kind that contradicts the leg count is a transcription error worth
-    catching at entry: ``same_game_parlay`` with one leg means a leg was
-    dropped, and ``straight`` with three means they were merged.
-    """
-    value = raw.strip().lower()
-    if value not in WAGER_KINDS:
-        raise UsageError(
-            f"{raw!r} is not a known wager kind.",
-            remediation="Known kinds: " + ", ".join(sorted(WAGER_KINDS)),
-        )
-    if value in MULTI_LEG and leg_count < 2:
-        raise UsageError(
-            f"--wager-kind {value} describes a multi-leg ticket, but only "
-            f"{leg_count} --leg was given.",
-            remediation="Pass one --leg per selection on the slip.",
-        )
-    if value == "straight" and leg_count > 1:
-        raise UsageError(
-            f"--wager-kind straight describes a single selection, but {leg_count} --leg were given."
-        )
-    return value  # type: ignore[return-value]
-
-
 def _ticket_odds(legs: list[BetLeg], explicit: str | None) -> tuple[int, Decimal]:
-    """The ticket's price: stated outright, or derived from fully priced legs.
-
-    ``--odds`` wins whenever it is passed. That is not merely a convenience:
-    for a Same Game Parlay the product of the legs is the *wrong* answer even
-    when every leg price is known, because correlated legs are repriced as a
-    group. The book's own number is the only correct one.
-
-    Deriving requires every leg to carry a price. A product over the subset
-    that happens to have one is a number with no meaning, so a partially
-    priced ticket is refused rather than silently under-priced.
-    """
-    if explicit is not None:
-        american = _parse_odds(explicit)
-        return american, american_to_decimal(american)
-
-    priced = _leg_odds(legs)
-    if len(priced) != len(legs):
-        raise UsageError(
-            f"{len(legs) - len(priced)} of {len(legs)} legs have no odds, so the ticket "
-            "price cannot be derived.",
-            remediation="Pass --odds with the ticket price shown on the slip.",
-        )
-    combined = combined_decimal_odds(priced)
-    return decimal_to_american(combined), combined
-
-
-# --------------------------------------------------------------- leg parsing
-
-LEG_KEYS = {"sport", "league", "market", "selection", "odds", "line", "side", "team", "player"}
-
-
-def _parse_leg_spec(spec: str) -> dict[str, str]:
-    """Parse a ``key=value,key=value`` ``--leg`` spec.
-
-    Keys: sport, league, market, selection, odds, line, side, team, player.
-    Matches the fields a single leg prompt collects interactively.
-
-    ``odds`` is optional. ``BetLeg.odds_american`` is nullable by design --
-    DraftKings publishes no per-leg price, and FanDuel renders none for a Same
-    Game Parlay -- so a leg with no price is a faithful transcription rather
-    than an incomplete one. The ticket price then has to arrive via ``--odds``;
-    :func:`_ticket_odds` is what refuses the combination that leaves a bet with
-    no price at all.
-    """
-    fields: dict[str, str] = {}
-    for chunk in spec.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if "=" not in chunk:
-            raise UsageError(
-                f"malformed --leg field {chunk!r}.",
-                remediation="Use key=value pairs separated by commas, e.g. "
-                "--leg 'sport=NFL,market=spread,selection=Chiefs -3.5,odds=-110'.",
-            )
-        key, _, value = chunk.partition("=")
-        key = key.strip()
-        if key not in LEG_KEYS:
-            raise UsageError(
-                f"unknown --leg field {key!r}.",
-                remediation=f"Known fields: {', '.join(sorted(LEG_KEYS))}.",
-            )
-        fields[key] = value.strip()
-    return fields
+    return ticket_odds(legs, parse_odds(explicit) if explicit is not None else None)
 
 
 def _leg_from_fields(
-    fields: dict[str, str],
-    *,
-    leg_order: int,
-    tenant_id: object,
-    user_id: object,
-    bet_id: object,
+    fields: dict[str, str], *, leg_order: int, tenant_id: UUID, user_id: UUID, bet_id: UUID
 ) -> BetLeg:
-    raw_odds = fields.get("odds")
-    odds_american = _parse_odds(raw_odds) if raw_odds else None
-    return BetLeg(
-        tenant_id=tenant_id,  # type: ignore[arg-type]
-        user_id=user_id,  # type: ignore[arg-type]
-        id=uuid4(),
-        bet_id=bet_id,  # type: ignore[arg-type]
-        leg_order=leg_order,
-        sport=fields.get("sport") or None,
-        league=fields.get("league") or None,
-        market_name=fields.get("market") or None,
-        selection_name=fields.get("selection") or None,
-        side=fields.get("side") or None,
-        line_value=Decimal(fields["line"]) if fields.get("line") else None,
-        target_team=fields.get("team") or None,
-        target_player=fields.get("player") or None,
-        odds_american=odds_american,
-        odds_decimal=american_to_decimal(odds_american) if odds_american is not None else None,
-    )
-
-
-# --------------------------------------------------------- promotion parsing
-
-PROMO_KEYS = {"type", "generosity_pct", "label", "scope", "leg", "triggered", "value_delivered"}
-
-
-def _parse_promo_spec(spec: str) -> dict[str, str]:
-    """Parse a ``key=value,key=value`` ``--promo`` spec."""
-    fields: dict[str, str] = {}
-    for chunk in spec.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if "=" not in chunk:
-            raise UsageError(
-                f"malformed --promo field {chunk!r}.",
-                remediation="Use key=value pairs separated by commas, e.g. "
-                "--promo 'type=profit_boost,generosity_pct=50'.",
-            )
-        key, _, value = chunk.partition("=")
-        key = key.strip()
-        if key not in PROMO_KEYS:
-            raise UsageError(
-                f"unknown --promo field {key!r}.",
-                remediation=f"Known fields: {', '.join(sorted(PROMO_KEYS))}.",
-            )
-        fields[key] = value.strip()
-    if "type" not in fields:
-        raise UsageError(f"--promo {spec!r} is missing required field 'type'.")
-    return fields
-
-
-def _parse_triggered(raw: str) -> bool:
-    value = raw.strip().lower()
-    if value in {"true", "yes", "1"}:
-        return True
-    if value in {"false", "no", "0"}:
-        return False
-    raise UsageError(
-        f"{raw!r} is not a valid value for 'triggered'.", remediation="Use true|false."
+    return build_leg(
+        leg_input(fields), leg_order=leg_order, tenant_id=tenant_id, user_id=user_id, bet_id=bet_id
     )
 
 
@@ -306,77 +104,17 @@ def _promotion_from_fields(
     *,
     apply_order: int,
     legs: list[BetLeg],
-    tenant_id: object,
-    user_id: object,
-    bet_id: object,
+    tenant_id: UUID,
+    user_id: UUID,
+    bet_id: UUID,
 ) -> BetPromotion:
-    """Build one ``BetPromotion``, resolving leg scope to a real leg id.
-
-    ``generosity_pct`` is mandatory on a profit boost. ``apply_boosts`` skips a
-    boost whose percentage is null, so one recorded without it would be stored,
-    reported as a promotion, and contribute nothing -- worse than refusing it.
-    """
-    promotion_type = fields["type"].strip().lower()
-    if promotion_type not in PROMOTION_TYPES:
-        raise UsageError(
-            f"{fields['type']!r} is not a known promotion type.",
-            remediation="Known types: " + ", ".join(sorted(PROMOTION_TYPES)),
-        )
-
-    scope = (fields.get("scope") or "ticket").strip().lower()
-    if scope not in PROMOTION_SCOPES:
-        raise UsageError(
-            f"{scope!r} is not a known promotion scope.",
-            remediation="Known scopes: " + ", ".join(sorted(PROMOTION_SCOPES)),
-        )
-
-    raw_leg = fields.get("leg")
-    if scope == "leg" and not raw_leg:
-        raise UsageError(
-            "--promo scope=leg needs the leg it applies to.",
-            remediation="Add leg=N, the 1-based position of the leg on the slip.",
-        )
-    if scope == "ticket" and raw_leg:
-        raise UsageError("--promo leg=N is only meaningful with scope=leg.")
-
-    bet_leg_id = None
-    if raw_leg:
-        try:
-            leg_order = int(raw_leg)
-        except ValueError as exc:
-            raise UsageError(f"{raw_leg!r} is not a valid leg number.") from exc
-        match = next((leg for leg in legs if leg.leg_order == leg_order), None)
-        if match is None:
-            raise UsageError(
-                f"--promo names leg {leg_order}, but this bet has {len(legs)} legs.",
-            )
-        bet_leg_id = match.id
-
-    generosity = fields.get("generosity_pct")
-    if promotion_type == "profit_boost" and not generosity:
-        raise UsageError(
-            "a profit boost needs generosity_pct.",
-            remediation="Add generosity_pct=50 for a 50% boost. Without it the boost is "
-            "recorded but contributes nothing to the economics.",
-        )
-
-    return BetPromotion(
-        tenant_id=tenant_id,  # type: ignore[arg-type]
-        user_id=user_id,  # type: ignore[arg-type]
-        id=uuid4(),
-        bet_id=bet_id,  # type: ignore[arg-type]
-        bet_leg_id=bet_leg_id,
-        promotion_type=promotion_type,  # type: ignore[arg-type]
-        scope=scope,  # type: ignore[arg-type]
-        label=fields.get("label") or None,
+    return build_promotion(
+        promotion_input(fields),
         apply_order=apply_order,
-        generosity_pct=Decimal(generosity) if generosity else None,
-        triggered=_parse_triggered(fields["triggered"]) if fields.get("triggered") else None,
-        value_delivered=(
-            _parse_money(fields["value_delivered"], field_name="value_delivered")
-            if fields.get("value_delivered")
-            else None
-        ),
+        legs=legs,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        bet_id=bet_id,
     )
 
 
@@ -395,22 +133,10 @@ def _recall_defaults(w: Warehouse) -> tuple[str | None, str | None]:
     return (account.sportsbook_code if account else None), sport
 
 
-# -------------------------------------------------------------------- draft
+# ------------------------------------------------------------------ request
 
 
-@dataclass(slots=True)
-class _Draft:
-    account: SportsbookAccount
-    account_is_new: bool
-    bet: Bet
-    legs: list[BetLeg]
-    promotions: list[BetPromotion] = field(default_factory=list)
-    leg_groups: list[BetLegGroup] = field(default_factory=list)
-
-
-def _build_from_flags(
-    w: Warehouse,
-    conn: DuckDBPyConnection,
+def _request_from_flags(
     *,
     sportsbook: str | None,
     account_label: str | None,
@@ -422,7 +148,8 @@ def _build_from_flags(
     promo_specs: list[str],
     placed_at: str | None,
     capture_method: CaptureMethod,
-) -> _Draft:
+) -> AddBetRequest:
+    """Read the flags into a request. Only the text is judged here."""
     if not sportsbook:
         raise UsageError("--sportsbook is required with --non-interactive.")
     if not leg_specs:
@@ -435,124 +162,61 @@ def _build_from_flags(
     if cash_staked == 0 and bonus_staked == 0:
         raise UsageError("a bet must risk cash or bonus stake: pass --stake and/or --bonus-stake.")
 
-    account, account_is_new = _resolve_account(
-        w, conn, sportsbook_code=sportsbook, account_label=account_label, interactive=False
-    )
-
-    bet_id = uuid4()
-    legs = [
-        _leg_from_fields(
-            _parse_leg_spec(spec),
-            leg_order=order,
-            tenant_id=w.scope.tenant_id,
-            user_id=w.scope.user_id,
-            bet_id=bet_id,
-        )
-        for order, spec in enumerate(leg_specs, start=1)
-    ]
-    odds_american, odds_decimal = _ticket_odds(legs, odds)
-    kind: WagerKind = (
-        _parse_wager_kind(wager_kind, leg_count=len(legs))
-        if wager_kind
-        else ("parlay" if len(legs) > 1 else "straight")
-    )
-
-    bet = Bet(
-        tenant_id=w.scope.tenant_id,
-        user_id=w.scope.user_id,
-        id=bet_id,
-        sportsbook_account_id=account.id,
-        capture_method=capture_method,
-        placed_at=_parse_placed_at(placed_at),
-        wager_kind=kind,
+    return AddBetRequest(
+        sportsbook=sportsbook,
+        account_label=account_label,
+        legs=[leg_input(parse_leg_spec(spec)) for spec in leg_specs],
+        odds_american=parse_odds(odds) if odds is not None else None,
+        wager_kind=wager_kind,
+        promotions=[promotion_input(parse_promo_spec(spec)) for spec in promo_specs],
         cash_staked=cash_staked,
         bonus_staked=bonus_staked,
-        odds_american_placed=odds_american,
-        odds_decimal_placed=odds_decimal,
-    )
-    promotions = [
-        _promotion_from_fields(
-            _parse_promo_spec(spec),
-            apply_order=order,
-            legs=legs,
-            tenant_id=w.scope.tenant_id,
-            user_id=w.scope.user_id,
-            bet_id=bet_id,
-        )
-        for order, spec in enumerate(promo_specs, start=1)
-    ]
-
-    return _Draft(
-        account=account,
-        account_is_new=account_is_new,
-        bet=bet,
-        legs=legs,
-        promotions=promotions,
+        placed_at=_parse_placed_at(placed_at),
+        capture_method=capture_method,
     )
 
 
-def _build_interactively(
-    w: Warehouse,
-    conn: DuckDBPyConnection,
-    *,
-    placed_at: str | None,
-    capture_method: CaptureMethod,
-) -> _Draft | None:
+def _request_interactively(
+    w: Warehouse, *, placed_at: str | None, capture_method: CaptureMethod
+) -> AddBetRequest | None:
     default_sportsbook, default_sport = _recall_defaults(w)
 
     raw_sportsbook = Prompt.ask("Sportsbook", default=default_sportsbook or "fanduel")
     sportsbook_code = raw_sportsbook.strip().lower()
-    account, account_is_new = _resolve_account(
-        w, conn, sportsbook_code=sportsbook_code, account_label=None, interactive=True
-    )
+    account = choose_account(w, sportsbook_code=sportsbook_code)
 
-    bet_id = uuid4()
-    legs: list[BetLeg] = []
-    leg_order = 1
+    legs: list[LegInput] = []
     while True:
         sport = Prompt.ask("Sport", default=default_sport or "") or None
         market = Prompt.ask("Wager type") or None
         selection = Prompt.ask("Selection") or None
         odds_american = _parse_odds(Prompt.ask("Odds (American)"))
         legs.append(
-            BetLeg(
-                tenant_id=w.scope.tenant_id,
-                user_id=w.scope.user_id,
-                id=uuid4(),
-                bet_id=bet_id,
-                leg_order=leg_order,
+            LegInput(
                 sport=sport,
                 market_name=market,
                 selection_name=selection,
                 odds_american=odds_american,
-                odds_decimal=american_to_decimal(odds_american),
             )
         )
-        leg_order += 1
         if not Confirm.ask("Add another leg?", default=False):
             break
 
-    leg_groups: list[BetLegGroup] = []
-    kind: WagerKind = "parlay" if len(legs) > 1 else "straight"
-    product = combined_decimal_odds(_leg_odds(legs))
+    leg_group: LegGroupInput | None = None
+    wager_kind: str | None = None
+    product = combined_decimal_odds(
+        [american_to_decimal(leg.odds_american) for leg in legs if leg.odds_american is not None]
+    )
     combined = product
 
     if len(legs) > 1 and Confirm.ask("Same Game Parlay?", default=False):
-        kind = "same_game_parlay"
+        wager_kind = "same_game_parlay"
         group_american = _parse_odds(Prompt.ask("SGP price (American, as the book shows it)"))
         combined = american_to_decimal(group_american)
-        group = BetLegGroup(
-            tenant_id=w.scope.tenant_id,
-            user_id=w.scope.user_id,
-            id=uuid4(),
-            bet_id=bet_id,
-            category=Prompt.ask("Group label", default="") or None,
+        leg_group = LegGroupInput(
             odds_american=group_american,
-            odds_decimal=combined,
+            category=Prompt.ask("Group label", default="") or None,
         )
-        leg_groups.append(group)
-        for leg in legs:
-            leg.group_id = group.id
 
     cash_staked = _parse_money(Prompt.ask("Stake", default="0.00"), field_name="stake")
     bonus_staked = _parse_money(
@@ -571,7 +235,7 @@ def _build_interactively(
     if bonus_staked:
         stake_line += f" + ${bonus_staked} bonus"
     console.print(stake_line)
-    if leg_groups:
+    if leg_group is not None:
         # The whole reason to model groups: the book's group price against the
         # product of its legs is the correlation adjustment, and it is only
         # measurable when both numbers are recorded.
@@ -583,25 +247,16 @@ def _build_interactively(
     if not Confirm.ask("Confirm?", default=True):
         return None
 
-    bet = Bet(
-        tenant_id=w.scope.tenant_id,
-        user_id=w.scope.user_id,
-        id=bet_id,
-        sportsbook_account_id=account.id,
-        capture_method=capture_method,
-        placed_at=_parse_placed_at(placed_at),
-        wager_kind=kind,
+    return AddBetRequest(
+        sportsbook=sportsbook_code,
+        account_label=account.label,
+        legs=legs,
+        leg_group=leg_group,
+        wager_kind=wager_kind,
         cash_staked=cash_staked,
         bonus_staked=bonus_staked,
-        odds_american_placed=decimal_to_american(combined),
-        odds_decimal_placed=combined,
-    )
-    return _Draft(
-        account=account,
-        account_is_new=account_is_new,
-        bet=bet,
-        legs=legs,
-        leg_groups=leg_groups,
+        placed_at=_parse_placed_at(placed_at),
+        capture_method=capture_method,
     )
 
 
@@ -701,17 +356,15 @@ def add(
     resolved = resolve()
     fmt = options_from(ctx).fmt
 
-    method = _parse_capture_method(capture_method)
-    _check_provenance(method, source_file)
+    method = parse_capture_method(capture_method)
+    check_provenance(method, source_file)
 
     with connect(resolved.settings) as conn:
         scope = identity.resolve_scope(conn, resolved)
         w = Warehouse(conn, scope)
 
         if non_interactive:
-            draft: _Draft | None = _build_from_flags(
-                w,
-                conn,
+            request: AddBetRequest | None = _request_from_flags(
                 sportsbook=sportsbook,
                 account_label=account_label,
                 leg_specs=leg or [],
@@ -724,33 +377,20 @@ def add(
                 capture_method=method,
             )
         else:
-            draft = _build_interactively(w, conn, placed_at=placed_at, capture_method=method)
+            request = _request_interactively(w, placed_at=placed_at, capture_method=method)
 
-        if draft is None:
+        if request is None:
             console.print("[yellow]Aborted. Nothing was written.[/yellow]")
             return
 
         archive_dir = resolved.settings.source_archive_dir
         assert archive_dir is not None  # Settings derives it from data_dir
-
-        with w.transaction() as tx:
-            # Archived inside the transaction so an abort leaves no row citing
-            # a bet that was never written. The copied bytes survive a
-            # rollback, which is harmless: the archive is content-addressed,
-            # so the next attempt reuses them rather than duplicating them.
-            if source_file is not None:
-                archived = archive_source(
-                    tx, source_file, archive_dir=archive_dir, capture_method=method
-                )
-                draft.bet.source_file_id = archived.id
-            if draft.account_is_new:
-                tx.accounts.add(draft.account)
-            tx.bets.add(draft.bet)
-            if draft.leg_groups:
-                tx.leg_groups.add_all(draft.leg_groups)
-            tx.legs.add_all(draft.legs)
-            if draft.promotions:
-                tx.bet_promotions.add_all(draft.promotions)
+        source = (
+            SourceToArchive(archive_dir=archive_dir, path=source_file)
+            if source_file is not None
+            else None
+        )
+        added = add_bet(w, request, source=source)
 
     columns = [
         "id",
@@ -763,7 +403,7 @@ def add(
         "capture_method",
         "source_file_id",
     ]
-    render([_summary_row(draft.bet, draft.legs)], columns=columns, fmt=fmt, title="bet add")
+    render([_summary_row(added.bet, added.legs)], columns=columns, fmt=fmt, title="bet add")
 
 
 __all__ = [

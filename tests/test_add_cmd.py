@@ -847,3 +847,27 @@ def test_interactive_straight_bet_is_never_asked_about_sgp(
         bet = w.bets.current()[0]
         assert bet.wager_kind == "straight"
         assert w.leg_groups.for_bet(bet.id) == []
+
+
+def test_interactive_entry_picks_one_of_several_accounts(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prompt picks the account; the service then resolves it by that label."""
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        for label in ("main", "alt"):
+            w.accounts.add(add_cmd._new_account(w, "fanduel", label))
+
+    prompts = iter(["fanduel", "alt", "MLB", "moneyline", "Red Sox", "-145", "5.00", "0.00"])
+    confirms = iter([False, True])  # "add another leg?" then "confirm?"
+    monkeypatch.setattr(Prompt, "ask", lambda *a, **k: next(prompts))
+    monkeypatch.setattr(Confirm, "ask", lambda *a, **k: next(confirms))
+
+    result = runner.invoke(app, ["add"])
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        bet = w.bets.current()[0]
+        account = w.accounts.get(bet.sportsbook_account_id)
+        assert account.label == "alt"
+        assert w.accounts.count() == 2

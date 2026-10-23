@@ -7,8 +7,9 @@ import typer
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve, write_config
-from bet.database import identity, migrator
+from bet.database import identity
 from bet.database.connection import connect, on_disk_storage_version
+from bet.services.bootstrap import bootstrap_warehouse
 
 
 def init(ctx: typer.Context) -> None:
@@ -46,13 +47,10 @@ def init(ctx: typer.Context) -> None:
     assert settings.db_path is not None
     db_existed = settings.db_path.exists()
     with connect(settings) as conn:
-        pending_before = len(migrator.pending(conn))
-        applied = migrator.apply(conn)
-        version = migrator.current_version(conn)
-        scope_existed = identity.existing_scope(conn) is not None
-        scope = identity.bootstrap(conn)
+        booted = bootstrap_warehouse(conn)
 
-    if not scope_existed:
+    scope, version = booted.scope, booted.version
+    if booted.scope_created:
         identity.record_in_config(resolved, scope)
 
     created.append(
@@ -74,7 +72,9 @@ def init(ctx: typer.Context) -> None:
             "item": "schema version",
             "path": f"{version:04d}" if version is not None else "none",
             "action": (
-                f"applied {len(applied)} of {pending_before} pending" if applied else "up to date"
+                f"applied {len(booted.applied)} of {booted.pending_before} pending"
+                if booted.applied
+                else "up to date"
             ),
         }
     )
@@ -83,7 +83,7 @@ def init(ctx: typer.Context) -> None:
         {
             "item": "local user",
             "path": str(scope.user_id),
-            "action": "already present" if scope_existed else "created",
+            "action": "created" if booted.scope_created else "already present",
         }
     )
 

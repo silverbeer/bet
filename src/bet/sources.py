@@ -13,7 +13,9 @@ Photos library expects to still have it afterwards.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -63,18 +65,62 @@ def archive(
             f"{path} is not a file.",
             remediation="Pass --source-file the path to the screenshot or statement.",
         )
+    return _store(
+        w,
+        sha256_of(source),
+        original_name=source.name,
+        byte_size=source.stat().st_size,
+        write=lambda destination: shutil.copy2(source, destination),
+        archive_dir=archive_dir,
+        capture_method=capture_method,
+    )
 
-    digest = sha256_of(source)
+
+def archive_bytes(
+    w: Warehouse,
+    data: bytes,
+    *,
+    original_name: str,
+    archive_dir: Path,
+    capture_method: CaptureMethod = "screenshot",
+) -> SourceFile:
+    """Archive ``data`` -- an uploaded file -- exactly as :func:`archive` would a path.
+
+    Same content address, same idempotence: the bytes of a screenshot archive
+    to the same row whether they arrived as a path or as an upload. Only the
+    final component of ``original_name`` is kept.
+    """
+    return _store(
+        w,
+        hashlib.sha256(data).hexdigest(),
+        original_name=Path(original_name).name,
+        byte_size=len(data),
+        write=lambda destination: destination.write_bytes(data),
+        archive_dir=archive_dir,
+        capture_method=capture_method,
+    )
+
+
+def _store(
+    w: Warehouse,
+    digest: str,
+    *,
+    original_name: str,
+    byte_size: int,
+    write: Callable[[Path], object],
+    archive_dir: Path,
+    capture_method: CaptureMethod,
+) -> SourceFile:
     existing = w.sources.by_digest(digest)
     if existing is not None:
         return existing
 
-    suffix = source.suffix.lower()
+    suffix = Path(original_name).suffix.lower()
     relative = Path(digest[:2]) / f"{digest}{suffix}"
     destination = archive_dir / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not destination.exists():
-        shutil.copy2(source, destination)
+        write(destination)
 
     return w.sources.add(
         SourceFile(
@@ -82,9 +128,9 @@ def archive(
             user_id=w.scope.user_id,
             id=uuid4(),
             archived_path=str(relative),
-            original_name=source.name,
+            original_name=original_name,
             sha256=digest,
-            byte_size=source.stat().st_size,
+            byte_size=byte_size,
             media_type=MEDIA_TYPES.get(suffix),
             capture_method=capture_method,
         )
@@ -96,4 +142,4 @@ def resolve(archive_dir: Path, source_file: SourceFile) -> Path:
     return archive_dir / source_file.archived_path
 
 
-__all__ = ["MEDIA_TYPES", "archive", "resolve"]
+__all__ = ["MEDIA_TYPES", "archive", "archive_bytes", "resolve"]

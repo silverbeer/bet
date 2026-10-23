@@ -1,9 +1,10 @@
 """``bet similar`` -- your settled record on bets like a proposed one (SB-1133).
 
 Takes the proposed ticket in exactly the flags ``bet add`` takes, parsed by the
-same functions, so a slip described once can be reviewed with ``similar`` and
-then recorded with ``add`` without translating anything. Read-only: nothing
-about the proposal is written.
+same functions (``bet.services.specs``) and judged by the same rules
+(``bet.services.tickets``), so a slip described once can be reviewed with
+``similar`` and then recorded with ``add`` without translating anything.
+Read-only: nothing about the proposal is written.
 
 The shared ``--sportsbook``/``--sport``/``--since``/``--until``/
 ``--include-void`` options narrow the *history* being compared against, as
@@ -18,14 +19,6 @@ from uuid import uuid4
 import typer
 
 from bet.analytics.similar import COLUMNS
-from bet.cli.commands.add_cmd import (
-    _leg_from_fields,
-    _parse_leg_spec,
-    _parse_promo_spec,
-    _parse_wager_kind,
-    _promotion_from_fields,
-    _ticket_odds,
-)
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
@@ -34,6 +27,14 @@ from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
 from bet.services.similar import SimilarQuery, similar_bets
+from bet.services.specs import (
+    leg_input,
+    parse_leg_spec,
+    parse_odds,
+    parse_promo_spec,
+    promotion_input,
+)
+from bet.services.tickets import build_legs, build_promotions, ticket_odds, wager_kind_for
 
 
 def similar(
@@ -74,39 +75,23 @@ def similar(
         scope = identity.resolve_scope(conn, resolved)
 
         bet_id = uuid4()
-        legs = [
-            _leg_from_fields(
-                _parse_leg_spec(spec),
-                leg_order=order,
-                tenant_id=scope.tenant_id,
-                user_id=scope.user_id,
-                bet_id=bet_id,
-            )
-            for order, spec in enumerate(leg_specs, start=1)
-        ]
-        kind = (
-            _parse_wager_kind(wager_kind, leg_count=len(legs))
-            if wager_kind
-            else ("parlay" if len(legs) > 1 else "straight")
-        )
+        ids = {"tenant_id": scope.tenant_id, "user_id": scope.user_id, "bet_id": bet_id}
+        legs = build_legs([leg_input(parse_leg_spec(spec)) for spec in leg_specs], **ids)
+        kind = wager_kind_for(wager_kind, leg_count=len(legs))
         # An unpriced SGP with no --odds is still worth comparing on every
         # other dimension; it simply has no price band.
+        explicit = parse_odds(odds) if odds is not None else None
         try:
-            odds_american: int | None = _ticket_odds(legs, odds)[0]
+            odds_american: int | None = ticket_odds(legs, explicit)[0]
         except UsageError:
-            if odds is not None:
-                raise
             odds_american = None
         promo_types = [
-            _promotion_from_fields(
-                _parse_promo_spec(spec),
-                apply_order=order,
+            p.promotion_type
+            for p in build_promotions(
+                [promotion_input(parse_promo_spec(spec)) for spec in promo or []],
                 legs=legs,
-                tenant_id=scope.tenant_id,
-                user_id=scope.user_id,
-                bet_id=bet_id,
-            ).promotion_type
-            for order, spec in enumerate(promo or [], start=1)
+                **ids,
+            )
         ]
 
         rows = similar_bets(

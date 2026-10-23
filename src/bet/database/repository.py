@@ -495,6 +495,10 @@ class Warehouse:
     def scope(self) -> OwnerScope:
         return self._scope
 
+    def sportsbook_codes(self) -> set[str]:
+        """The seeded sportsbook codes: unscoped reference data, read only."""
+        return known_sportsbook_codes(self._conn)
+
     @contextmanager
     def transaction(self) -> Iterator[Warehouse]:
         """Commit on success, roll back on any failure.
