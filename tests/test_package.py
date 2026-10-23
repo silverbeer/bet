@@ -7,6 +7,7 @@ import bet
 SUBPACKAGES = [
     "agents",
     "analytics",
+    "api",
     "cli",
     "database",
     "extraction",
