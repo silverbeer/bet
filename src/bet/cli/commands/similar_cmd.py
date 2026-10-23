@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import typer
 
-from bet.analytics.similar import COLUMNS, HistoricBet, Proposal, compare, eligible
+from bet.analytics.similar import COLUMNS
 from bet.cli.commands.add_cmd import (
     _leg_from_fields,
     _parse_leg_spec,
@@ -26,7 +26,6 @@ from bet.cli.commands.add_cmd import (
     _promotion_from_fields,
     _ticket_odds,
 )
-from bet.cli.commands.list_cmd import _bounds
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
@@ -34,6 +33,7 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
+from bet.services.similar import SimilarQuery, similar_bets
 
 
 def similar(
@@ -69,11 +69,9 @@ def similar(
     resolved = resolve()
     options = options_from(ctx)
     thresholds = resolved.settings.thresholds
-    since, until = _bounds(options.since, options.until)
 
     with connect(resolved.settings) as conn:
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
 
         bet_id = uuid4()
         legs = [
@@ -111,28 +109,23 @@ def similar(
             for order, spec in enumerate(promo or [], start=1)
         ]
 
-        history = [
-            HistoricBet(
-                bet=bet,
-                legs=w.legs.for_bet(bet.id),
-                promo_types=frozenset(p.promotion_type for p in w.bet_promotions.for_bet(bet.id)),
-            )
-            for bet in w.bets.search(
-                status="settled",
-                sportsbook_code=options.sportsbook,
+        rows = similar_bets(
+            Warehouse(conn, scope),
+            SimilarQuery(
+                legs=legs,
+                wager_kind=kind,
+                odds_american=odds_american,
+                promo_types=promo_types,
+                sportsbook=options.sportsbook,
                 sport=options.sport,
-                since=since,
-                until=until,
-            )
-            if eligible(bet, include_void=options.include_void)
-        ]
+                since=options.since,
+                until=options.until,
+                include_void=options.include_void,
+                min_settled=thresholds.min_settled_bets,
+                exploratory_below=thresholds.exploratory_below,
+            ),
+        )
 
-    rows = compare(
-        Proposal(legs=legs, wager_kind=kind, odds_american=odds_american, promo_types=promo_types),
-        history,
-        min_settled=thresholds.min_settled_bets,
-        exploratory_below=thresholds.exploratory_below,
-    )
     render(rows, columns=COLUMNS, fmt=options.fmt, title="bet similar")
 
 

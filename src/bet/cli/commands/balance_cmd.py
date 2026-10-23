@@ -23,24 +23,15 @@ failure of the command.
 
 from __future__ import annotations
 
-from datetime import datetime
-from functools import partial
 from pathlib import Path
-from typing import Annotated, Any
-from uuid import UUID, uuid4
+from typing import Annotated
+from uuid import uuid4
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 
-from bet.analytics.balance import (
-    COLUMNS,
-    DIAGNOSTIC_COLUMNS,
-    BetActivity,
-    latest,
-    reconcile,
-    total,
-)
+from bet.analytics.balance import COLUMNS, DIAGNOSTIC_COLUMNS
 from bet.cli.capture import (
     check_provenance,
     parse_capture_method,
@@ -53,10 +44,16 @@ from bet.cli.output import render
 from bet.config import OutputFormat, resolve
 from bet.database import identity, migrator
 from bet.database.connection import connect
-from bet.database.repository import Warehouse, known_sportsbook_codes
+from bet.database.repository import Warehouse
 from bet.errors import UsageError
 from bet.models.balance import BalanceSnapshot
 from bet.models.ownership import SportsbookAccount
+from bet.services.balance import (
+    BalanceQuery,
+    account_name,
+    balance_report,
+    require_known_sportsbook,
+)
 from bet.sources import archive as archive_source
 
 # Notices go to stderr so they never share a stream with --format json/csv.
@@ -85,21 +82,9 @@ ADD_COLUMNS = [
 ]
 
 
-def account_name(account: SportsbookAccount) -> str:
-    """``fanduel``, or ``fanduel:boosts`` when the label says something more."""
-    if account.label == account.sportsbook_code:
-        return account.sportsbook_code
-    return f"{account.sportsbook_code}:{account.label}"
-
-
 def created_notice(account: SportsbookAccount) -> None:
     """Announce an auto-created account. The label is user text, never markup."""
     notices.print(f"Created account {escape(account_name(account))}.")
-
-
-def _activity(w: Warehouse, account_id: UUID, after: datetime, through: datetime) -> BetActivity:
-    staked, returned = w.bets.reconciliation_inputs(account_id, after, through)
-    return BetActivity(staked=staked, returned=returned)
 
 
 # ------------------------------------------------------------------ report
@@ -147,49 +132,18 @@ def report(
 
     resolved = resolve()
     options = options_from(ctx)
-    code = (sportsbook or options.sportsbook or "").strip().lower() or None
+    query = BalanceQuery(
+        sportsbook=sportsbook or options.sportsbook,
+        account_label=account_label,
+        history=history,
+    )
 
     with connect(resolved.settings) as conn:
         migrator.require_current(conn)
-        if code is not None and code not in (known := known_sportsbook_codes(conn)):
-            raise UsageError(
-                f"{code!r} is not a known sportsbook.",
-                remediation="Known sportsbooks: " + ", ".join(sorted(known)),
-            )
+        require_known_sportsbook(conn, query.sportsbook)
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
+        rows = balance_report(Warehouse(conn, scope), query)
 
-        accounts = [
-            a
-            for a in w.accounts.fetch_all(order_by="sportsbook_code, label")
-            if (code is None or a.sportsbook_code == code)
-            and (account_label is None or a.label == account_label)
-        ]
-
-        rows: list[dict[str, Any]] = []
-        last_rows: list[dict[str, Any]] = []
-        for account in accounts:
-            snapshots = w.balances.for_account(account.id)
-            if not snapshots:
-                continue
-            args = (
-                account_name(account),
-                snapshots,
-                w.cash_flows.for_account(account.id),
-                partial(_activity, w, account.id),
-            )
-            if history:
-                reconciled = reconcile(*args)
-                rows.extend(reconciled)
-                last_rows.append(reconciled[-1])
-            else:
-                row = latest(*args)
-                assert row is not None  # snapshots is non-empty
-                rows.append(row)
-                last_rows.append(row)
-
-    if last_rows:
-        rows.append(total(last_rows))
     columns = COLUMNS
     if options.fmt is OutputFormat.TABLE and not options.verbose:
         # --history judges each row by its own interval, so it keeps that gap.

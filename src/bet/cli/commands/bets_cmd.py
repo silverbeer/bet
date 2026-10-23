@@ -13,7 +13,7 @@ from uuid import UUID
 
 import typer
 
-from bet.cli.commands.list_cmd import _bounds, _row
+from bet.cli.commands.list_cmd import _row
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.cli.tree import NotImplementedYetError
@@ -22,6 +22,7 @@ from bet.database import identity
 from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
+from bet.services.bets import ListQuery, bet_detail, list_bets
 
 app = typer.Typer(name="bets", help="Query individual bets.", no_args_is_help=True)
 
@@ -41,18 +42,13 @@ def show(ctx: typer.Context, bet_id: Annotated[str, typer.Argument(help="Bet id.
 
     with connect(resolved.settings) as conn:
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
+        detail = bet_detail(Warehouse(conn, scope), bet_uuid)
 
-        bet = w.bets.get(bet_uuid)
-        account = w.accounts.find(bet.sportsbook_account_id)
-        legs = w.legs.for_bet(bet.id)
-        promotions = w.bet_promotions.for_bet(bet.id)
-        provenance = w.bets.provenance(bet.id)
-
+    bet, provenance = detail.bet, detail.provenance
     rows = [
         {
             "bet_id": str(bet.id),
-            "sportsbook": account.label if account else "",
+            "sportsbook": detail.account_label or "",
             "placed_at": bet.placed_at,
             "status": bet.status,
             "result": bet.result,
@@ -66,7 +62,7 @@ def show(ctx: typer.Context, bet_id: Annotated[str, typer.Argument(help="Bet id.
             "selection": leg.selection_name,
             "odds": leg.odds_american,
             "leg_result": leg.result,
-            "promotions": len(promotions),
+            "promotions": len(detail.promotions),
             "capture_method": bet.capture_method,
             "import_run_id": provenance["import_run_id"],
             "source_record_id": provenance["source_record_id"],
@@ -74,7 +70,7 @@ def show(ctx: typer.Context, bet_id: Annotated[str, typer.Argument(help="Bet id.
             "profile_version": provenance["profile_version"],
             "version": bet.version,
         }
-        for leg in legs
+        for leg in detail.legs
     ]
     columns = [
         "bet_id",
@@ -108,24 +104,17 @@ def open_bets(ctx: typer.Context) -> None:
     """List unsettled bets. Equivalent to ``bet list --open``."""
     resolved = resolve()
     options = options_from(ctx)
-    since, until = _bounds(options.since, options.until)
+    query = ListQuery(
+        is_open=True,
+        sportsbook=options.sportsbook,
+        sport=options.sport,
+        since=options.since,
+        until=options.until,
+    )
 
     with connect(resolved.settings) as conn:
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
-
-        bets = w.bets.search(
-            is_open=True,
-            sportsbook_code=options.sportsbook,
-            sport=options.sport,
-            since=since,
-            until=until,
-        )
-        rows = []
-        for bet in bets:
-            account = w.accounts.find(bet.sportsbook_account_id)
-            legs = w.legs.for_bet(bet.id)
-            rows.append(_row(bet, account.label if account else None, legs))
+        rows = [_row(listing) for listing in list_bets(Warehouse(conn, scope), query)]
 
     render(rows, columns=LIST_COLUMNS, fmt=options.fmt, title="bet bets open")
 
@@ -145,24 +134,17 @@ def search(
     """
     resolved = resolve()
     options = options_from(ctx)
-    since, until = _bounds(options.since, options.until)
+    filters = ListQuery(
+        text=query,
+        sportsbook=options.sportsbook,
+        sport=options.sport,
+        since=options.since,
+        until=options.until,
+    )
 
     with connect(resolved.settings) as conn:
         scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
-
-        bets = w.bets.search(
-            text=query,
-            sportsbook_code=options.sportsbook,
-            sport=options.sport,
-            since=since,
-            until=until,
-        )
-        rows = []
-        for bet in bets:
-            account = w.accounts.find(bet.sportsbook_account_id)
-            legs = w.legs.for_bet(bet.id)
-            rows.append(_row(bet, account.label if account else None, legs))
+        rows = [_row(listing) for listing in list_bets(Warehouse(conn, scope), filters)]
 
     render(rows, columns=LIST_COLUMNS, fmt=options.fmt, title=f"bet bets search {query!r}")
 
