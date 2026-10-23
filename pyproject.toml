@@ -28,10 +28,13 @@ dependencies = [
     "pyarrow>=18.0",
     "structlog>=24.4",
     "tomli-w>=1.2.0",
+    "fastapi>=0.162.0",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [project.scripts]
 bet = "bet.cli.main:run"
+bet-api = "bet.api.server:main"
 
 [dependency-groups]
 dev = [
@@ -42,6 +45,7 @@ dev = [
     "pandas-stubs>=2.2",
     "types-pytz>=2025.1",
     "pre-commit>=4.6.2",
+    "httpx>=0.28.1",
 ]
 
 [build-system]
