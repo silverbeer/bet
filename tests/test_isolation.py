@@ -913,11 +913,25 @@ def test_reference_data_is_shared_by_every_user(world: World) -> None:
 # ------------------------------------------------------- aggregates (SB-1399)
 
 
+_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+
+
 def _as_json(value: Any) -> Any:
-    """Service output encoded the way the API encodes it (ISO 8601, Decimal as str)."""
-    return json.loads(
+    """JSON-comparable form: timestamps parsed, so ``Z`` and ``+00:00`` agree."""
+    encoded = json.loads(
         json.dumps(value, default=lambda o: o.isoformat() if isinstance(o, datetime) else str(o))
     )
+    return _instants(encoded)
+
+
+def _instants(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _instants(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_instants(v) for v in value]
+    if isinstance(value, str) and _ISO.match(value):
+        return datetime.fromisoformat(value)
+    return value
 
 
 def test_aggregates_are_the_callers_own(api: Api) -> None:
@@ -933,12 +947,12 @@ def test_aggregates_are_the_callers_own(api: Api) -> None:
     )
     assert card.status_code == 200
     expected_card = card_to_dict(card_summary(w, CardQuery(tz=tz, days=60)), share=False)
-    assert card.json() == _as_json(expected_card)
+    assert _instants(card.json()) == _as_json(expected_card)
 
     balances = api.client.get("/balances", headers=api.bearer("bob"))
     assert balances.status_code == 200
     expected_rows = balance_report(w, BalanceQuery())
-    assert balances.json() == _as_json(expected_rows)
+    assert _instants(balances.json()) == _as_json(expected_rows)
 
     similar = api.client.post(
         "/similar",
