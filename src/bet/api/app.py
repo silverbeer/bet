@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from bet import __version__
-from bet.api import auth, errors, health, me
+from bet.api import auth, balances, bets, card, errors, health, me, similar
 from bet.api.settings import WORKERS_ENV, ApiSettings
 from bet.database.connection import connect
 from bet.errors import ConfigError
@@ -61,4 +61,8 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(me.router)
+    app.include_router(bets.router)
+    app.include_router(card.router)
+    app.include_router(balances.router)
+    app.include_router(similar.router)
     return app

@@ -47,7 +47,7 @@ dev = [
     "pandas-stubs>=2.2",
     "types-pytz>=2025.1",
     "pre-commit>=4.6.2",
-    "httpx>=0.28.1",
+    "httpx2>=2.16.0",
 ]
 
 [build-system]
