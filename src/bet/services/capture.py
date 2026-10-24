@@ -30,6 +30,17 @@ FUTURE_TOLERANCE = timedelta(minutes=5)
 CAPTURE_METHODS: tuple[str, ...] = get_args(CaptureMethod)
 
 
+def parse_capture_method(raw: str) -> CaptureMethod:
+    """``raw`` as a capture method, or refused with the known ones."""
+    value = raw.strip().lower()
+    if value not in CAPTURE_METHODS:
+        raise UsageError(
+            f"{raw!r} is not a known capture method.",
+            remediation="Known methods: " + ", ".join(sorted(CAPTURE_METHODS)),
+        )
+    return value  # type: ignore[return-value]
+
+
 # -------------------------------------------------------------------- money
 
 
@@ -176,6 +187,7 @@ __all__ = [
     "check_money",
     "new_account",
     "now_if_absent",
+    "parse_capture_method",
     "require_not_future",
     "require_seeded",
     "resolve_account",

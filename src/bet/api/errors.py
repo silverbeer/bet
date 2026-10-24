@@ -29,8 +29,19 @@ from bet.log import get_logger
 
 log = get_logger(__name__)
 
+
+class PayloadTooLargeError(UsageError):
+    """An upload over the size the server accepts."""
+
+
+class UnsupportedMediaTypeError(UsageError):
+    """An upload whose ``Content-Type`` the server does not archive."""
+
+
 # Most specific first; the first isinstance match wins.
 STATUS_BY_ERROR: tuple[tuple[type[BetError], int], ...] = (
+    (PayloadTooLargeError, 413),
+    (UnsupportedMediaTypeError, 415),
     (UsageError, 400),
     (AuthenticationError, 401),
     (NotFoundError, 404),

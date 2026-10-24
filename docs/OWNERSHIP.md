@@ -201,6 +201,14 @@ and as a user in another tenant against the first user's ids, and requires 404
 or a result containing none of the first user's data. It also fails if
 `bet/api/` names the shortcut, or if any request calls it.
 
+Writes (SB-1400) are held to the same rule, and the first user's rows must
+be unchanged afterwards. Settling another user's bet, or citing another user's
+`source_file_id` from `POST /bets`, `/balances` or `/cash-flows`, is the same
+404 as an unknown id. Uploaded source files are deduplicated **per user**
+(`source_file_is_unique_per_user`, a scoped `by_digest`). Two users who upload
+the same image share the content-addressed bytes on disk but get a row each,
+so `POST /sources` never says whether anyone else holds that image.
+
 ---
 
 ## 6. Repository rule: scoped by construction
