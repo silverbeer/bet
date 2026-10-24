@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# PERSONAL FINANCIAL DATA AND SECRETS — never enter the build context.
+# The image is pushed to a registry; anything sent to the builder can end up
+# in a layer. The context is an allowlist: everything is excluded, then only
+# what the build needs is let back in. The deny rules after it re-exclude data
+# and secrets even if they appear inside an allowed path (later rules win).
+# ---------------------------------------------------------------------------
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE.md
+!src/
+
+# Data directories and warehouse files (mirrors .gitignore)
+**/data/
+**/exports/
+**/samples/
+**/backups/
+**/sources/
+**/*.duckdb
+**/*.duckdb.wal
+**/*.duckdb.*
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.parquet
+**/*.csv
+**/*.xlsx
+**/*.xls
+**/*.pdf
+**/*.ofx
+**/*.qfx
+
+# Secrets and local config
+**/.env
+**/.env.*
+**/config.toml
+**/secrets.toml
+**/*.pem
+**/*.key
+
+# VCS, environments, caches
+**/.git
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/htmlcov
+**/*.egg-info
+**/.DS_Store

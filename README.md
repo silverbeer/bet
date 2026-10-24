@@ -81,6 +81,29 @@ this machine's when none is set. Pushes count in ROI; voids never do
 (`--include-void` adds a void count). `--format json` gives the same card as
 one object; `--since`/`--until` and `--format csv` are refused.
 
+## Container image
+
+The API ships as an image with both `bet-api` and `bet` in it (see
+[ADR 0002](docs/decisions/0002-api-service.md)). CI builds it on every pull
+request and, on `main`, pushes `ghcr.io/silverbeer/bet:<commit sha>` (and
+`:main`) for linux/arm64.
+
+The image holds code only. Everything BET writes goes to `/data`: mount a volume
+there, owned by uid/gid `10001`. Never mount a real warehouse to try it out.
+
+```bash
+docker build -t bet-api:dev .
+docker volume create bet-dev
+docker run --rm -v bet-dev:/data bet-api:dev bet init
+docker run --rm -p 127.0.0.1:8000:8000 -v bet-dev:/data \
+  -e BET_JWT_SIGNING_KEY="$(openssl rand -base64 48)" bet-api:dev
+curl http://127.0.0.1:8000/readyz
+```
+
+The server needs `BET_JWT_SIGNING_KEY` from the environment and an existing
+warehouse (it never creates one), and refuses to start if `WEB_CONCURRENCY` asks
+for more than one worker.
+
 ## Planning documents
 
 - [`docs/PRD.md`](docs/PRD.md) — product vision and the questions BET must answer
