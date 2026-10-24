@@ -1,4 +1,4 @@
-"""API settings: the CLI's resolved configuration plus the worker count.
+"""API settings: the CLI's resolved configuration, the worker count and token signing.
 
 The warehouse location is not configured a second way. ``bet.config.resolve``
 already applies the config file, ``BET_*`` variables and the git rule; a
@@ -6,21 +6,44 @@ parallel pydantic-settings layer would be a second resolution path that could
 point the API at a different file than the CLI. ``Settings`` forbids unknown
 ``BET_*`` keys, so the worker count is read from ``WEB_CONCURRENCY`` -- the
 variable uvicorn itself uses as its ``--workers`` default.
+
+Token signing is read from ``BET_JWT_*``, a prefix ``bet.config`` skips, so
+exporting these never affects the CLI and the key never enters ``Settings``:
+
+* ``BET_JWT_SIGNING_KEY`` -- required, at least 32 bytes. Environment only,
+  never the config file (a Kubernetes Secret in deployment).
+* ``BET_JWT_ACCESS_TTL_SECONDS`` -- optional, default 900 (15 minutes).
+* ``BET_JWT_REFRESH_TTL_SECONDS`` -- optional, default 2592000 (30 days).
+
+Without a usable signing key the server refuses to start: every route but the
+health checks needs one, and a pod that reports ready while refusing every
+request is harder to diagnose than one that fails at startup with this reason.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from bet.config import Settings, resolve
 from bet.errors import ConfigError
+from bet.services.auth import MIN_SIGNING_KEY_BYTES, TokenSettings
 
 WORKERS_ENV = "WEB_CONCURRENCY"
+SIGNING_KEY_ENV = "BET_JWT_SIGNING_KEY"
+ACCESS_TTL_ENV = "BET_JWT_ACCESS_TTL_SECONDS"
+REFRESH_TTL_ENV = "BET_JWT_REFRESH_TTL_SECONDS"
+
+KEY_REMEDIATION = (
+    f"Set {SIGNING_KEY_ENV} to a random value of at least {MIN_SIGNING_KEY_BYTES} bytes,\n"
+    "for example the output of `openssl rand -base64 48`. It is read from the\n"
+    "environment only, never from the config file."
+)
 
 
 class ApiSettings(BaseModel):
@@ -29,6 +52,7 @@ class ApiSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     bet: Settings
+    auth: TokenSettings
     workers: Annotated[int, Field(ge=1)] = 1
 
     @classmethod
@@ -36,13 +60,43 @@ class ApiSettings(BaseModel):
         cls, *, env: Mapping[str, str] | None = None, config_path: Path | None = None
     ) -> Self:
         environ = env if env is not None else os.environ
-        raw = environ.get(WORKERS_ENV, "").strip()
-        try:
-            workers = int(raw) if raw else 1
-        except ValueError as exc:
-            raise ConfigError(
-                f"{WORKERS_ENV} is not an integer: {raw!r}",
-                remediation=f"Unset {WORKERS_ENV} or set it to 1.",
-            ) from exc
+        workers = _integer(environ, WORKERS_ENV, f"Unset {WORKERS_ENV} or set it to 1.")
         settings = resolve(config_path=config_path, env=environ).settings
-        return cls(bet=settings, workers=workers)
+        return cls(
+            bet=settings,
+            auth=token_settings(environ),
+            workers=1 if workers is None else workers,
+        )
+
+
+def _integer(environ: Mapping[str, str], name: str, remediation: str) -> int | None:
+    raw = environ.get(name, "").strip()
+    try:
+        return int(raw) if raw else None
+    except ValueError as exc:
+        raise ConfigError(f"{name} is not an integer: {raw!r}", remediation=remediation) from exc
+
+
+def token_settings(environ: Mapping[str, str]) -> TokenSettings:
+    """Read ``BET_JWT_*``. Refuses a missing or short key, without ever echoing it."""
+    key = environ.get(SIGNING_KEY_ENV, "")
+    if not key.strip():
+        raise ConfigError(f"{SIGNING_KEY_ENV} is not set.", remediation=KEY_REMEDIATION)
+
+    lifetimes: dict[str, timedelta] = {}
+    for field, name in (("access_ttl", ACCESS_TTL_ENV), ("refresh_ttl", REFRESH_TTL_ENV)):
+        seconds = _integer(environ, name, f"Unset {name} or set it to a number of seconds.")
+        if seconds is not None:
+            lifetimes[field] = timedelta(seconds=seconds)
+
+    try:
+        return TokenSettings(signing_key=SecretStr(key), **lifetimes)
+    except ValidationError as exc:
+        # Messages only: a validation error's input would be the key itself.
+        problems = "; ".join(str(e["msg"]) for e in exc.errors())
+        raise ConfigError(
+            f"the token settings are invalid: {problems}",
+            remediation=(
+                f"{KEY_REMEDIATION}\n{ACCESS_TTL_ENV} and {REFRESH_TTL_ENV} must be positive."
+            ),
+        ) from None

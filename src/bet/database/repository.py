@@ -28,6 +28,7 @@ from uuid import UUID
 from bet.errors import DatabaseError, NotFoundError
 from bet.models.balance import BalanceSnapshot, CashFlow
 from bet.models.bet import Bet, BetLeg, BetLegGroup, BetPromotion, Promotion
+from bet.models.credential import RefreshToken, UserCredential
 from bet.models.ownership import OwnedModel, OwnerScope, SportsbookAccount
 from bet.models.source import SourceFile
 
@@ -449,6 +450,79 @@ class BetPromotionRepository(ScopedRepository[BetPromotion]):
         ]
 
 
+class UserCredentialRepository(ScopedRepository[UserCredential]):
+    """The scoped user's password hash.
+
+    Keyed by owner alone -- there is no ``id`` -- so it is read with ``current``
+    and written with ``set_hash``, never with the id-keyed base methods.
+    """
+
+    table = "core.user_credential"
+    model = UserCredential
+
+    def current(self) -> UserCredential | None:
+        rows = self._rows()
+        return self._build(rows[0]) if rows else None
+
+    def set_hash(self, password_hash: str, at: datetime) -> UserCredential:
+        """Store a new hash: the first one is created, a later one is a rotation."""
+        existing = self.current()
+        if existing is None:
+            return self.add(
+                UserCredential(
+                    tenant_id=self._scope.tenant_id,
+                    user_id=self._scope.user_id,
+                    password_hash=password_hash,
+                    created_at=at,
+                )
+            )
+        self._conn.execute(
+            f"UPDATE {self.table} SET password_hash = ?, rotated_at = ? WHERE {self._scoped()}",
+            [password_hash, at, *self._scope_params()],
+        )
+        return existing.model_copy(update={"password_hash": password_hash, "rotated_at": at})
+
+
+class RefreshTokenRepository(ScopedRepository[RefreshToken]):
+    table = "core.refresh_token"
+    model = RefreshToken
+
+    def revoke(self, token_id: UUID, at: datetime, *, replaced_by: UUID | None = None) -> bool:
+        """Revoke one live token. False when it was already revoked (or is not ours)."""
+        row = self._conn.execute(
+            f"UPDATE {self.table} SET revoked_at = ?, replaced_by = ? "
+            f"WHERE {self._scoped('id = ? AND revoked_at IS NULL')}",
+            [at, _as_param(replaced_by), *self._scope_params(), str(token_id)],
+        ).fetchone()
+        return bool(row and row[0])
+
+    def revoke_chain(self, token_id: UUID, at: datetime) -> int:
+        """Revoke every still-live token descended from ``token_id`` by rotation.
+
+        Earlier tokens in the chain were revoked as each was rotated, so the
+        live remainder is always downstream. Returns how many were revoked.
+        """
+        scoped = "t.tenant_id = ? AND t.user_id = ?"
+        row = self._conn.execute(
+            f"UPDATE {self.table} SET revoked_at = ? "
+            f"WHERE {self._scoped('revoked_at IS NULL')} AND id IN ("
+            "WITH RECURSIVE chain(id, replaced_by) AS ("
+            f"  SELECT t.id, t.replaced_by FROM {self.table} t WHERE {scoped} AND t.id = ?"
+            "  UNION ALL"
+            f"  SELECT t.id, t.replaced_by FROM {self.table} t"
+            f"  JOIN chain c ON t.id = c.replaced_by WHERE {scoped}"
+            ") SELECT id FROM chain)",
+            [
+                at,
+                *self._scope_params(),
+                *self._scope_params(),
+                str(token_id),
+                *self._scope_params(),
+            ],
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+
 def known_sportsbook_codes(conn: DuckDBPyConnection) -> set[str]:
     """The sportsbook codes seeded into ``core.sportsbook``.
 
@@ -468,6 +542,8 @@ OWNED_REPOSITORIES: tuple[type[ScopedRepository[Any]], ...] = (
     BetPromotionRepository,
     BalanceSnapshotRepository,
     CashFlowRepository,
+    UserCredentialRepository,
+    RefreshTokenRepository,
 )
 
 
@@ -490,6 +566,8 @@ class Warehouse:
         self.bet_promotions = BetPromotionRepository(conn, scope)
         self.balances = BalanceSnapshotRepository(conn, scope)
         self.cash_flows = CashFlowRepository(conn, scope)
+        self.credentials = UserCredentialRepository(conn, scope)
+        self.refresh_tokens = RefreshTokenRepository(conn, scope)
 
     @property
     def scope(self) -> OwnerScope:
@@ -530,8 +608,10 @@ __all__ = [
     "BetRepository",
     "CashFlowRepository",
     "PromotionRepository",
+    "RefreshTokenRepository",
     "ScopedRepository",
     "SportsbookAccountRepository",
+    "UserCredentialRepository",
     "Warehouse",
     "known_sportsbook_codes",
 ]

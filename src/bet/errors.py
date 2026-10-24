@@ -54,6 +54,16 @@ class NotFoundError(BetError):
     exit_code = 5
 
 
+class AuthenticationError(BetError):
+    """Credentials or a token were missing, wrong, expired or revoked.
+
+    Deliberately vague about which: a login failure must not reveal whether
+    the user exists.
+    """
+
+    exit_code = 77  # sysexits.h EX_NOPERM
+
+
 class UsageError(BetError):
     """The command was invoked in a way that cannot be satisfied."""
 

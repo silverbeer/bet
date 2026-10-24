@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from bet.errors import BetError, DatabaseError, NotFoundError, UsageError
+from bet.errors import AuthenticationError, BetError, DatabaseError, NotFoundError, UsageError
 from bet.log import get_logger
 
 log = get_logger(__name__)
@@ -23,6 +23,7 @@ log = get_logger(__name__)
 # Most specific first; the first isinstance match wins.
 STATUS_BY_ERROR: tuple[tuple[type[BetError], int], ...] = (
     (UsageError, 400),
+    (AuthenticationError, 401),
     (NotFoundError, 404),
     # Unreachable, locked or out of date: the request may succeed once the
     # warehouse is fixed, which is what 503 says.
@@ -43,9 +44,12 @@ def error_body(error_type: str, message: str, remediation: str | None) -> dict[s
 
 async def _bet_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, BetError)
+    status = status_for(exc)
     return JSONResponse(
-        status_code=status_for(exc),
+        status_code=status,
         content=error_body(type(exc).__name__, exc.message, exc.remediation),
+        # RFC 6750 section 3: a 401 names the scheme the client must use.
+        headers={"WWW-Authenticate": "Bearer"} if status == 401 else None,
     )
 
 

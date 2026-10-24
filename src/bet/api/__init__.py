@@ -9,6 +9,8 @@ refuses to start with more. Run it with the ``bet-api`` console script:
 The warehouse is the same one the CLI uses -- ``BET_DATA_DIR``, ``BET_DB_PATH``
 and the config file resolve exactly as they do for ``bet``. It must already
 exist and be migrated (``bet init``); ``/readyz`` reports pending migrations.
+``BET_JWT_SIGNING_KEY`` must be set, or the server refuses to start (see
+``bet.api.settings``); users and passwords come from ``bet user``.
 OpenAPI is served at ``/docs`` and ``/openapi.json``.
 """
 
