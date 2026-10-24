@@ -182,6 +182,25 @@ If config and database disagree — a restored backup against a stale config, sa
 — `bet doctor` reports it and commands refuse to run rather than silently
 operating as a user that does not exist.
 
+### 5.5 Server-side scoping rule
+
+> **On the server, the `OwnerScope` comes only from a verified access token's
+> `tid` and `sub` claims.**
+
+`identity.existing_scope` — "the first user in `core.user`" — and
+`resolve_scope`, which is built on it, are a local-CLI bootstrap convenience
+for a warehouse with one user. With two users that shortcut silently returns
+the first one, so the API never calls it: every route except the health checks
+and `/auth/*` depends on `CurrentScope` (`bet.api.deps`), and `/auth/*` builds
+its scope from the user a password matched, or from a verified refresh token's
+claims.
+
+`tests/test_isolation.py` (SB-1398) enforces this. It discovers every
+protected route from the app, calls each as a second user in the same tenant
+and as a user in another tenant against the first user's ids, and requires 404
+or a result containing none of the first user's data. It also fails if
+`bet/api/` names the shortcut, or if any request calls it.
+
 ---
 
 ## 6. Repository rule: scoped by construction
