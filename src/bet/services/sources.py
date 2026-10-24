@@ -9,11 +9,12 @@ same row.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Self
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
@@ -113,6 +114,32 @@ def archive_source(
     )
 
 
+class ArchivedSource(BaseModel):
+    """An uploaded file's row, and whether this upload is what archived it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    source_file: SourceFile
+    is_new: bool
+
+
+def archive_upload(w: Warehouse, source: SourceToArchive) -> ArchivedSource:
+    """Archive uploaded ``data`` on its own, for a later write to cite by id.
+
+    Recorded as a ``screenshot``: an upload is an image of a slip or a screen.
+    Known bytes return the scope's existing row. Both the row and the lookup
+    are per user (``source_file_is_unique_per_user``), so ``is_new`` says
+    whether *this* user had archived the bytes -- never whether anyone else had.
+    """
+    assert source.data is not None, "an upload carries data, not a path"
+    existing = w.sources.by_digest(hashlib.sha256(source.data).hexdigest())
+    if existing is not None:
+        return ArchivedSource(source_file=existing, is_new=False)
+    return ArchivedSource(
+        source_file=archive_source(w, source, capture_method="screenshot"), is_new=True
+    )
+
+
 def source_id(
     w: Warehouse,
     *,
@@ -131,8 +158,10 @@ def source_id(
 
 
 __all__ = [
+    "ArchivedSource",
     "SourceToArchive",
     "archive_source",
+    "archive_upload",
     "check_provenance",
     "cited_source",
     "refuse_manual_source",

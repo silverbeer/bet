@@ -308,6 +308,12 @@ READ_ROUTES = {
     ("GET", "/balances"),
     ("POST", "/similar"),
 }
+# SB-1400's writes share the bets and balances routers; tests/test_api_writes.py covers them.
+WRITE_ROUTES = {
+    ("POST", "/bets"),
+    ("POST", "/bets/{bet_id}/settle"),
+    ("POST", "/balances"),
+}
 
 
 def _calls(dependant: Any) -> set[Any]:
@@ -324,7 +330,7 @@ def test_every_read_route_requires_a_scope(api: Api) -> None:
         if isinstance(route, APIRoute)
         for method in route.methods or ()
     }
-    assert set(routes) == READ_ROUTES
+    assert set(routes) == READ_ROUTES | WRITE_ROUTES
     for key in READ_ROUTES:
         assert current_scope in _calls(routes[key].dependant), key
 

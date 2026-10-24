@@ -409,6 +409,9 @@ class Call:
     path_params: dict[str, str] = field(default_factory=dict)
     query: dict[str, str] = field(default_factory=dict)
     body: Any = None
+    # A raw body (an upload) instead of JSON, sent with these headers.
+    content: bytes | None = None
+    headers: dict[str, str] = field(default_factory=dict)
     # Whether the victim's own response must contain their data. False for a
     # route whose success carries nothing back (a 204, say).
     owner_sees_data: bool = True
@@ -459,6 +462,43 @@ ROUTE_CALLS[("POST", "/similar")] = lambda a: [
         body={"legs": [{"sport": "baseball", "league": "MLB", "market_name": "Moneyline"}]},
         owner_sees_data=False,
     ),
+]
+
+# SB-1400 write endpoints. Each is aimed at A's ids: B and C must get 404
+# before anything is written, and A's rows must be unchanged afterwards. The
+# ledger writes cite A's source file, which is what B and C must be refused.
+WRITE_AMOUNT = "1.11"
+
+
+def _cites(a: Seeded) -> dict[str, str]:
+    return {"capture_method": "screenshot", "source_file_id": str(a.source_file_id)}
+
+
+ROUTE_CALLS[("POST", "/bets")] = lambda a: [
+    Call(
+        body={
+            "sportsbook": "fanduel",
+            "legs": [{"sport": "baseball", "odds_american": -110}],
+            "cash_staked": WRITE_AMOUNT,
+            **_cites(a),
+        }
+    ),
+]
+ROUTE_CALLS[("POST", "/bets/{bet_id}/settle")] = lambda a: [
+    Call(path_params={"bet_id": str(a.pending_bet_id)}, body={"result": "lost"}),
+    Call(path_params={"bet_id": str(a.settled_bet_id)}, body={"result": "lost", "force": True}),
+]
+ROUTE_CALLS[("POST", "/balances")] = lambda a: [
+    Call(body={"sportsbook": "fanduel", "cash_balance": WRITE_AMOUNT, **_cites(a)}),
+]
+ROUTE_CALLS[("POST", "/cash-flows")] = lambda a: [
+    Call(body={"kind": "deposit", "sportsbook": "fanduel", "amount": WRITE_AMOUNT, **_cites(a)}),
+    Call(body={"kind": "withdrawal", "sportsbook": "fanduel", "amount": WRITE_AMOUNT, **_cites(a)}),
+]
+# A's own image bytes (see _seed). A gets A's existing row back; anyone else
+# gets a new row of their own, and must not learn that A holds the image.
+ROUTE_CALLS[("POST", "/sources")] = lambda a: [
+    Call(content=f"{a.name.title()}-Isolation".encode(), headers={"Content-Type": "image/png"}),
 ]
 
 # Path parameters filled in automatically, by name, with every matching id of
@@ -562,7 +602,8 @@ def send(
         _url(template, call),
         params=call.query or None,
         json=call.body,
-        headers=headers,
+        content=call.content,
+        headers=call.headers | headers,
     )
     return response
 
@@ -614,6 +655,9 @@ def _supplied(call: Call | None) -> str:
     parts = [*call.path_params.values(), *call.query.values()]
     if call.body is not None:
         parts.append(json.dumps(call.body, default=str))
+    if call.content is not None:
+        # The digest of the caller's own bytes is theirs to compute.
+        parts.append(hashlib.sha256(call.content).hexdigest())
     return "\n".join(parts)
 
 
@@ -969,3 +1013,115 @@ def test_aggregates_are_the_callers_own(api: Api) -> None:
             assert Decimal(str(row["staked"])) == own_stake, (
                 f"B's similar stake {row['staked']} is not B's own {own_stake}"
             )
+
+
+# ---------------------------------------------------------- writes (SB-1400)
+
+
+def _rows_of(api: Api, user: Seeded) -> dict[str, list[str]]:
+    return owned_rows(Warehouse(api.cursor(), user.scope))
+
+
+def test_b_settling_as_bet_is_404_and_leaves_it_unchanged(api: Api) -> None:
+    a = api.world.a
+    before = _rows_of(api, a)
+    for bet_id in (a.pending_bet_id, a.settled_bet_id):
+        response = api.client.post(
+            f"/bets/{bet_id}/settle",
+            json={"result": "won", "cash_returned": WRITE_AMOUNT, "force": True},
+            headers=api.bearer("bob"),
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["type"] == "NotFoundError"
+    assert _rows_of(api, a) == before
+    pending = Warehouse(api.cursor(), a.scope).bets.get(a.pending_bet_id)
+    assert (pending.status, pending.result) == ("pending", None)
+
+
+@pytest.mark.parametrize("viewer", ["bob", "carol"])
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/bets",
+            {"sportsbook": "fanduel", "legs": [{"odds_american": -110}], "cash_staked": "1.11"},
+        ),
+        ("/balances", {"sportsbook": "fanduel", "cash_balance": "1.11"}),
+        ("/cash-flows", {"kind": "deposit", "sportsbook": "fanduel", "amount": "1.11"}),
+    ],
+)
+def test_citing_as_source_is_refused_like_an_unknown_id(
+    api: Api, viewer: str, path: str, body: dict[str, Any]
+) -> None:
+    a, b = api.world.a, api.world.users[viewer]
+    before = {u: _rows_of(api, u) for u in (a, b)}
+    unknown = uuid.uuid4()
+
+    answers = []
+    for source_id in (a.source_file_id, unknown):
+        cited = body | {"capture_method": "screenshot", "source_file_id": str(source_id)}
+        response = api.client.post(path, json=cited, headers=api.bearer(viewer))
+        assert response.status_code == 404, response.text
+        error = response.json()["error"]
+        answers.append((error["type"], error["message"].replace(str(source_id), "<id>")))
+        assert not _leaked(response, a, Call(body=cited))
+
+    assert answers[0] == answers[1], "A's source id is distinguishable from an unknown one"
+    assert {u: _rows_of(api, u) for u in (a, b)} == before
+
+
+def test_bs_writes_land_only_in_bs_scope(api: Api) -> None:
+    a, b, c = api.world.a, api.world.b, api.world.c
+    others = {u.name: _rows_of(api, u) for u in (a, c)}
+    bob = api.bearer("bob")
+
+    upload = api.client.post(
+        "/sources", content=b"bob's own slip", headers=bob | {"Content-Type": "image/png"}
+    )
+    assert upload.status_code == 201
+    source_id = upload.json()["source_file_id"]
+    cited = {"capture_method": "screenshot", "source_file_id": source_id}
+    added = api.client.post(
+        "/bets",
+        json={"sportsbook": "fanduel", "legs": [{"odds_american": 120}], "cash_staked": "2.00"}
+        | cited,
+        headers=bob,
+    )
+    assert added.status_code == 201, added.text
+    bet_id = added.json()["bet"]["id"]
+    settled = api.client.post(f"/bets/{bet_id}/settle", json={"result": "won"}, headers=bob)
+    assert settled.status_code == 200, settled.text
+    for path, body in (
+        ("/balances", {"sportsbook": "fanduel", "cash_balance": "4.40"}),
+        ("/cash-flows", {"kind": "withdrawal", "sportsbook": "fanduel", "amount": "1.00"}),
+    ):
+        response = api.client.post(path, json=body | cited, headers=bob)
+        assert response.status_code == 201, response.text
+
+    w = Warehouse(api.cursor(), b.scope)
+    assert w.sources.get(UUID(source_id)).capture_method == "screenshot"
+    bet_row = w.bets.get(UUID(bet_id))
+    assert (bet_row.status, bet_row.source_file_id) == ("settled", UUID(source_id))
+    assert bet_row.sportsbook_account_id == b.account_id
+    assert len(w.balances.fetch_all()) == 2 and len(w.cash_flows.fetch_all()) == 2
+    assert {u.name: _rows_of(api, u) for u in (a, c)} == others
+
+
+def test_uploading_as_bytes_tells_b_nothing(api: Api) -> None:
+    """Same image, two users: B gets a row of B's own, as if nobody had it."""
+    a, b = api.world.a, api.world.b
+    image = f"{a.name.title()}-Isolation".encode()  # A's archived bytes (see _seed)
+    png = {"Content-Type": "image/png"}
+
+    as_b = api.client.post("/sources", content=image, headers=api.bearer("bob") | png)
+    assert as_b.status_code == 201
+    body = as_b.json()
+    assert body["already_archived"] is False
+    assert body["source_file_id"] != str(a.source_file_id)
+    assert body["original_name"] == "upload.png"
+    assert Warehouse(api.cursor(), b.scope).sources.get(UUID(body["source_file_id"]))
+
+    as_a = api.client.post("/sources", content=image, headers=api.bearer("alice") | png)
+    assert as_a.status_code == 200
+    assert as_a.json()["source_file_id"] == str(a.source_file_id)
+    assert as_a.json()["already_archived"] is True

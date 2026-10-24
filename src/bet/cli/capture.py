@@ -30,6 +30,7 @@ from bet.services.capture import (
     CAPTURE_METHODS,
     UnknownLabelError,
     new_account,
+    parse_capture_method,
     require_not_future,
     require_seeded,
 )
@@ -80,16 +81,6 @@ def parse_local_timestamp(raw: str | None, *, option: str) -> datetime:
     if value.tzinfo is None:
         value = value.astimezone()  # naive -> the machine's local time zone
     return require_not_future(value, field_name=option, shown=raw)
-
-
-def parse_capture_method(raw: str) -> CaptureMethod:
-    value = raw.strip().lower()
-    if value not in CAPTURE_METHODS:
-        raise UsageError(
-            f"{raw!r} is not a known capture method.",
-            remediation="Known methods: " + ", ".join(sorted(CAPTURE_METHODS)),
-        )
-    return value  # type: ignore[return-value]
 
 
 def check_provenance(
