@@ -8,10 +8,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from bet import __version__
-from bet.api import errors, health
+from bet.api import auth, errors, health, me
 from bet.api.settings import WORKERS_ENV, ApiSettings
 from bet.database.connection import connect
 from bet.errors import ConfigError
+from bet.services.auth import warm_up
 
 
 def require_single_worker(settings: ApiSettings) -> None:
@@ -32,6 +33,12 @@ def require_single_worker(settings: ApiSettings) -> None:
 
 
 def create_app(settings: ApiSettings | None = None) -> FastAPI:
+    """Build the app.
+
+    There is no app without a token signing key: ``ApiSettings`` requires one,
+    and ``from_env`` raises a ``ConfigError`` naming the variable to set (see
+    ``bet.api.settings``).
+    """
     resolved = settings if settings is not None else ApiSettings.from_env()
     require_single_worker(resolved)
 
@@ -41,6 +48,8 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         # the deployment's init container) does, and applies migrations.
         with connect(resolved.bet, create=False) as conn:
             app.state.conn = conn
+            # Before serving, so the first unknown-user login is not faster.
+            warm_up()
             try:
                 yield
             finally:
@@ -50,4 +59,6 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.state.settings = resolved
     errors.install(app)
     app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(me.router)
     return app

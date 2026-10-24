@@ -11,6 +11,7 @@ is the one operation the ownership columns exist to permit (OWNERSHIP.md 5.3).
 from __future__ import annotations
 
 import getpass
+import json
 import tomllib
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -53,6 +54,81 @@ def user_timezone(conn: DuckDBPyConnection, scope: OwnerScope) -> str | None:
         [str(scope.tenant_id), str(scope.user_id)],
     ).fetchone()
     return str(row[0]) if row and row[0] else None
+
+
+_USER_FIELDS = (
+    "tenant_id",
+    "id",
+    "display_name",
+    "locale",
+    "timezone",
+    "status",
+    "preferences",
+    "created_at",
+    "updated_at",
+)
+_USER_COLUMNS = ", ".join(_USER_FIELDS)
+
+
+def _user(row: tuple[object, ...]) -> User:
+    values = dict(zip(_USER_FIELDS, row, strict=True))
+    raw = values["preferences"]
+    values["preferences"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    return User.model_validate(values)
+
+
+def find_user(conn: DuckDBPyConnection, scope: OwnerScope) -> User | None:
+    """The user a scope names, or ``None`` if there is no such user."""
+    row = conn.execute(
+        f"SELECT {_USER_COLUMNS} FROM core.user WHERE tenant_id = ? AND id = ?",
+        [str(scope.tenant_id), str(scope.user_id)],
+    ).fetchone()
+    return _user(row) if row else None
+
+
+def users_named(
+    conn: DuckDBPyConnection, display_name: str, *, tenant_id: UUID | None = None
+) -> list[User]:
+    """Users whose display name matches, ignoring case; optionally within one tenant.
+
+    A display name is the login name. core.user cannot carry a unique
+    constraint without rewriting it, so uniqueness is checked by
+    ``bet user create`` and a caller must treat more than one match as no match.
+    """
+    sql = f"SELECT {_USER_COLUMNS} FROM core.user WHERE lower(display_name) = lower(?)"
+    params: list[object] = [display_name]
+    if tenant_id is not None:
+        sql += " AND tenant_id = ?"
+        params.append(str(tenant_id))
+    return [_user(r) for r in conn.execute(sql + " ORDER BY created_at", params).fetchall()]
+
+
+def create_user(conn: DuckDBPyConnection, tenant_id: UUID, display_name: str) -> OwnerScope:
+    """Add one more user to an existing tenant. Unlike ``bootstrap``, never idempotent."""
+    now = datetime.now(UTC)
+    user = User(
+        tenant_id=tenant_id,
+        id=_generate_id(conn),
+        display_name=display_name,
+        created_at=now,
+        updated_at=now,
+    )
+    conn.execute(
+        "INSERT INTO core.user "
+        "(tenant_id, id, display_name, locale, timezone, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            str(user.tenant_id),
+            str(user.id),
+            user.display_name,
+            user.locale,
+            user.timezone,
+            user.status,
+            user.created_at,
+            user.updated_at,
+        ],
+    )
+    return OwnerScope(tenant_id=user.tenant_id, user_id=user.id)
 
 
 def bootstrap(conn: DuckDBPyConnection, *, display_name: str | None = None) -> OwnerScope:

@@ -19,7 +19,7 @@ from rich.markup import escape
 
 from bet import __version__, log
 from bet.cli import tree
-from bet.cli.commands import balance_cmd, bets_cmd, config_cmd
+from bet.cli.commands import balance_cmd, bets_cmd, config_cmd, user_cmd
 from bet.cli.commands.add_cmd import add as add_command
 from bet.cli.commands.card_cmd import card as card_command
 from bet.cli.commands.cashflow_cmd import deposit as deposit_command
@@ -62,6 +62,7 @@ app.add_typer(bets_cmd.app, name="bets")
 app.add_typer(balance_cmd.app, name="balance")
 app.command("deposit", help="Record cash deposited into a sportsbook account.")(deposit_command)
 app.command("withdraw", help="Record cash withdrawn from a sportsbook account.")(withdraw_command)
+app.add_typer(user_cmd.app, name="user")
 tree.register(app)
 
 

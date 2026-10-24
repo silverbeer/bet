@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import secrets
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,6 +20,7 @@ from bet import log
 from bet.api import ApiSettings, create_app
 from bet.api import server as api_server
 from bet.api.deps import Cursor, get_cursor
+from bet.api.settings import SIGNING_KEY_ENV, token_settings
 from bet.config import Settings
 from bet.database import migrator
 from bet.database.connection import connect
@@ -49,6 +51,8 @@ def clean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("BET_DATA_DIR", str(data))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # A throwaway key: the server refuses to start without one (SB-1397).
+    monkeypatch.setenv(SIGNING_KEY_ENV, secrets.token_urlsafe(48))
     return data
 
 
@@ -58,7 +62,7 @@ def settings(clean: Path) -> ApiSettings:
     bet_settings = Settings(data_dir=clean)
     with connect(bet_settings) as conn:
         migrator.apply(conn)
-    return ApiSettings(bet=bet_settings)
+    return ApiSettings(bet=bet_settings, auth=token_settings(os.environ))
 
 
 @pytest.fixture
@@ -162,7 +166,7 @@ def test_lifespan_uses_the_pinned_storage_version(settings: ApiSettings) -> None
 
 
 def test_startup_refuses_a_missing_warehouse(clean: Path) -> None:
-    app = create_app(ApiSettings(bet=Settings(data_dir=clean)))
+    app = create_app(ApiSettings(bet=Settings(data_dir=clean), auth=token_settings(os.environ)))
     with pytest.raises(DatabaseError, match="no warehouse"), TestClient(app):
         pass  # pragma: no cover - startup raises first
     assert not (clean / "bet.duckdb").exists()

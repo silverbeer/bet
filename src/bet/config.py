@@ -32,6 +32,12 @@ from bet.paths import (
 
 ENV_PREFIX = "BET_"
 
+# BET_JWT_* configure the API's token signing (bet.api.settings), not Settings.
+# They are skipped here so that exporting one -- the signing key in particular
+# -- neither breaks `bet` (Settings forbids unknown keys) nor lets a secret
+# into resolved configuration, where `bet config show` would print it.
+API_ENV_PREFIX = "BET_JWT_"
+
 
 class Source(StrEnum):
     """Where a resolved configuration value came from."""
@@ -143,7 +149,7 @@ def _from_env(env: Mapping[str, str]) -> dict[str, Any]:
     """
     found: dict[str, Any] = {}
     for name, raw in env.items():
-        if not name.startswith(ENV_PREFIX) or not raw:
+        if not name.startswith(ENV_PREFIX) or name.startswith(API_ENV_PREFIX) or not raw:
             continue
         key = name[len(ENV_PREFIX) :].lower()
         if "__" in key:
