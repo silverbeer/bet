@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps the BET API's loopback port forwarded on the mac mini (SB-1403).
+  A template: scripts/deploy-k3s.sh fills in __REPO__ and __HOME__ and
+  installs it into ~/Library/LaunchAgents. Holds no secrets, and never may.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.silverbeer.bet.portforward</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__REPO__/scripts/bet-portforward.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:__HOME__/.rd/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/bet-portforward.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/bet-portforward.log</string>
+</dict>
+</plist>
