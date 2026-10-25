@@ -31,6 +31,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from bet.analytics.balance import COLUMNS, DIAGNOSTIC_COLUMNS
+from bet.cli.backend import open_backend
 from bet.cli.capture import (
     check_provenance,
     markup_safe_labels,
@@ -41,19 +42,10 @@ from bet.cli.capture import (
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import OutputFormat, resolve
-from bet.database import identity, migrator
-from bet.database.connection import connect
-from bet.database.repository import Warehouse
 from bet.errors import UsageError
 from bet.models.ownership import SportsbookAccount
-from bet.services.balance import (
-    BalanceQuery,
-    account_name,
-    balance_report,
-    require_known_sportsbook,
-)
-from bet.services.ledger import BalanceSnapshotRequest, add_balance_snapshot
-from bet.services.sources import SourceToArchive
+from bet.services.balance import BalanceQuery, account_name
+from bet.services.ledger import BalanceSnapshotRequest
 
 # Notices go to stderr so they never share a stream with --format json/csv.
 notices = Console(stderr=True)
@@ -137,11 +129,9 @@ def report(
         history=history,
     )
 
-    with connect(resolved.settings) as conn:
-        migrator.require_current(conn)
-        require_known_sportsbook(conn, query.sportsbook)
-        scope = identity.resolve_scope(conn, resolved)
-        rows = balance_report(Warehouse(conn, scope), query)
+    # The sportsbook is checked before the local identity, as it always was.
+    with open_backend(resolved, migrated=True, defer_scope=True) as backend:
+        rows = backend.balances(query)
 
     columns = COLUMNS
     if options.fmt is OutputFormat.TABLE and not options.verbose:
@@ -217,18 +207,8 @@ def add(
         notes=notes,
     )
 
-    with connect(resolved.settings) as conn:
-        migrator.require_current(conn)
-        scope = identity.resolve_scope(conn, resolved)
-        archive_dir = resolved.settings.source_archive_dir
-        assert archive_dir is not None  # Settings derives it from data_dir
-        source = (
-            SourceToArchive(archive_dir=archive_dir, path=source_file)
-            if source_file is not None
-            else None
-        )
-        with markup_safe_labels():
-            recorded = add_balance_snapshot(Warehouse(conn, scope), request, source=source)
+    with open_backend(resolved, migrated=True) as backend, markup_safe_labels():
+        recorded = backend.add_balance(request, source_file)
 
     account, snapshot = recorded.account, recorded.snapshot
     if recorded.account_is_new:

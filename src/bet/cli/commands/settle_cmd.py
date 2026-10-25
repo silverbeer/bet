@@ -18,12 +18,10 @@ import typer
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
+from bet.cli.backend import Backend, OpenBet, open_backend
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
-from bet.database import identity
-from bet.database.connection import connect
-from bet.database.repository import Warehouse
 from bet.errors import UsageError
 from bet.models.bet import Bet, BetResult
 from bet.services.settle import (
@@ -34,7 +32,6 @@ from bet.services.settle import (
     needs_explicit_return,
     parse_result,
     resolve_result,
-    settle_bet,
 )
 
 console = Console()
@@ -93,9 +90,9 @@ def _summary_row(bet: Bet) -> dict[str, object]:
 # -------------------------------------------------------------- interactive
 
 
-def _settle_one_interactively(w: Warehouse, bet: Bet, account_label: str | None) -> bool:
+def _settle_one_interactively(backend: Backend, open_bet: OpenBet) -> bool:
     """Prompt for one bet's settlement. Returns True if it was settled."""
-    legs = w.legs.for_bet(bet.id)
+    bet, account_label, legs = open_bet.bet, open_bet.account_label, open_bet.legs
 
     console.print()
     stake_line = f"[bold]{account_label or '?'}[/bold]  staked ${bet.cash_staked}"
@@ -124,7 +121,7 @@ def _settle_one_interactively(w: Warehouse, bet: Bet, account_label: str | None)
         raw_result = Prompt.ask("Result", choices=list(RESULTS))
     result = resolve_result(parse_result(raw_result), leg_results)
 
-    has_promotions = bool(w.bet_promotions.for_bet(bet.id))
+    has_promotions = open_bet.has_promotions()
     explicit_return: Decimal | None = None
     if needs_explicit_return(
         bet, result, has_promotions=has_promotions
@@ -141,8 +138,7 @@ def _settle_one_interactively(w: Warehouse, bet: Bet, account_label: str | None)
     if not Confirm.ask("Confirm?", default=True):
         return False
 
-    settle_bet(
-        w,
+    backend.settle(
         SettleRequest(
             bet_id=bet.id,
             result=result,
@@ -154,12 +150,11 @@ def _settle_one_interactively(w: Warehouse, bet: Bet, account_label: str | None)
     return True
 
 
-def _settle_interactively(w: Warehouse) -> int:
+def _settle_interactively(backend: Backend) -> int:
     """Walk pending bets one at a time. Returns how many were settled."""
     settled = 0
-    for bet in w.bets.open_bets():
-        account = w.accounts.find(bet.sportsbook_account_id)
-        if _settle_one_interactively(w, bet, account.label if account else None):
+    for open_bet in backend.open_bets():
+        if _settle_one_interactively(backend, open_bet):
             settled += 1
     return settled
 
@@ -194,12 +189,9 @@ def settle(
     resolved = resolve()
     fmt = options_from(ctx).fmt
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
-
+    with open_backend(resolved) as backend:
         if bet_id is None:
-            count = _settle_interactively(w)
+            count = _settle_interactively(backend)
             console.print(f"[green]{count} bet(s) settled.[/green]")
             return
 
@@ -208,8 +200,7 @@ def settle(
         except ValueError as exc:
             raise UsageError(f"{bet_id!r} is not a valid bet id.") from exc
 
-        settled = settle_bet(
-            w,
+        settled = backend.settle(
             SettleRequest(
                 bet_id=bet_uuid,
                 result=result,
@@ -220,7 +211,7 @@ def settle(
             ),
         )
 
-    render([_summary_row(settled.bet)], fmt=fmt, title="bet settle")
+    render([_summary_row(settled)], fmt=fmt, title="bet settle")
 
 
 __all__ = ["settle"]

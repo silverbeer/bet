@@ -29,6 +29,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
+from bet.cli.backend import open_backend
 from bet.cli.capture import (
     check_provenance,
     choose_account,
@@ -40,18 +41,15 @@ from bet.cli.capture import (
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
-from bet.database import identity
-from bet.database.connection import connect
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
 from bet.models.bet import Bet, BetLeg, BetPromotion, CaptureMethod
-from bet.services.add import AddBetRequest, add_bet
+from bet.services.add import AddBetRequest
 from bet.services.odds import (
     american_to_decimal,
     combined_decimal_odds,
     decimal_to_american,
 )
-from bet.services.sources import SourceToArchive
 from bet.services.specs import (
     leg_input,
     parse_leg_spec,
@@ -359,10 +357,7 @@ def add(
     method = parse_capture_method(capture_method)
     check_provenance(method, source_file)
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
-        w = Warehouse(conn, scope)
-
+    with open_backend(resolved) as backend:
         if non_interactive:
             request: AddBetRequest | None = _request_from_flags(
                 sportsbook=sportsbook,
@@ -377,20 +372,17 @@ def add(
                 capture_method=method,
             )
         else:
+            # Prompting reads the warehouse (defaults, accounts) as it goes,
+            # which the API does not serve: remote mode refuses here.
+            w = backend.warehouse("`bet add` without --non-interactive")
             request = _request_interactively(w, placed_at=placed_at, capture_method=method)
 
         if request is None:
             console.print("[yellow]Aborted. Nothing was written.[/yellow]")
             return
 
-        archive_dir = resolved.settings.source_archive_dir
-        assert archive_dir is not None  # Settings derives it from data_dir
-        source = (
-            SourceToArchive(archive_dir=archive_dir, path=source_file)
-            if source_file is not None
-            else None
-        )
-        added = add_bet(w, request, source=source)
+        # Remote mode uploads the file first and cites the id it is given.
+        bet, legs = backend.add_bet(request, source_file)
 
     columns = [
         "id",
@@ -403,7 +395,7 @@ def add(
         "capture_method",
         "source_file_id",
     ]
-    render([_summary_row(added.bet, added.legs)], columns=columns, fmt=fmt, title="bet add")
+    render([_summary_row(bet, legs)], columns=columns, fmt=fmt, title="bet add")
 
 
 __all__ = [

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typer
 
+from bet.cli.backend import refuse_remote
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve, write_config
@@ -21,6 +22,7 @@ def init(ctx: typer.Context) -> None:
     creates a warehouse inside a repository.
     """
     resolved = resolve()
+    refuse_remote(resolved, "bet init")
     settings = resolved.settings
     fmt = options_from(ctx).fmt
 

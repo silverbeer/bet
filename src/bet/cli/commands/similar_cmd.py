@@ -14,27 +14,15 @@ they do for every analytical command.
 from __future__ import annotations
 
 from typing import Annotated
-from uuid import uuid4
 
 import typer
 
 from bet.analytics.similar import COLUMNS
+from bet.cli.backend import HistoryFilters, Proposal, open_backend
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
-from bet.database import identity
-from bet.database.connection import connect
-from bet.database.repository import Warehouse
 from bet.errors import UsageError
-from bet.services.similar import SimilarQuery, similar_bets
-from bet.services.specs import (
-    leg_input,
-    parse_leg_spec,
-    parse_odds,
-    parse_promo_spec,
-    promotion_input,
-)
-from bet.services.tickets import build_legs, build_promotions, ticket_odds, wager_kind_for
 
 
 def similar(
@@ -71,44 +59,19 @@ def similar(
     options = options_from(ctx)
     thresholds = resolved.settings.thresholds
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
-
-        bet_id = uuid4()
-        ids = {"tenant_id": scope.tenant_id, "user_id": scope.user_id, "bet_id": bet_id}
-        legs = build_legs([leg_input(parse_leg_spec(spec)) for spec in leg_specs], **ids)
-        kind = wager_kind_for(wager_kind, leg_count=len(legs))
-        # An unpriced SGP with no --odds is still worth comparing on every
-        # other dimension; it simply has no price band.
-        explicit = parse_odds(odds) if odds is not None else None
-        try:
-            odds_american: int | None = ticket_odds(legs, explicit)[0]
-        except UsageError:
-            odds_american = None
-        promo_types = [
-            p.promotion_type
-            for p in build_promotions(
-                [promotion_input(parse_promo_spec(spec)) for spec in promo or []],
-                legs=legs,
-                **ids,
-            )
-        ]
-
-        rows = similar_bets(
-            Warehouse(conn, scope),
-            SimilarQuery(
-                legs=legs,
-                wager_kind=kind,
-                odds_american=odds_american,
-                promo_types=promo_types,
+    with open_backend(resolved) as backend:
+        rows = backend.similar(
+            Proposal(
+                leg_specs=leg_specs, odds=odds, wager_kind=wager_kind, promo_specs=promo or []
+            ),
+            HistoryFilters(
                 sportsbook=options.sportsbook,
                 sport=options.sport,
                 since=options.since,
                 until=options.until,
                 include_void=options.include_void,
-                min_settled=thresholds.min_settled_bets,
-                exploratory_below=thresholds.exploratory_below,
             ),
+            thresholds,
         )
 
     render(rows, columns=COLUMNS, fmt=options.fmt, title="bet similar")

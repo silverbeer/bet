@@ -13,16 +13,14 @@ from uuid import UUID
 
 import typer
 
+from bet.cli.backend import open_backend
 from bet.cli.commands.list_cmd import _row
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.cli.tree import NotImplementedYetError
 from bet.config import resolve
-from bet.database import identity
-from bet.database.connection import connect
-from bet.database.repository import Warehouse
 from bet.errors import UsageError
-from bet.services.bets import ListQuery, bet_detail, list_bets
+from bet.services.bets import ListQuery
 
 app = typer.Typer(name="bets", help="Query individual bets.", no_args_is_help=True)
 
@@ -40,9 +38,8 @@ def show(ctx: typer.Context, bet_id: Annotated[str, typer.Argument(help="Bet id.
     resolved = resolve()
     fmt = options_from(ctx).fmt
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
-        detail = bet_detail(Warehouse(conn, scope), bet_uuid)
+    with open_backend(resolved) as backend:
+        detail = backend.bet_detail(bet_uuid)
 
     bet, provenance = detail.bet, detail.provenance
     rows = [
@@ -112,9 +109,8 @@ def open_bets(ctx: typer.Context) -> None:
         until=options.until,
     )
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
-        rows = [_row(listing) for listing in list_bets(Warehouse(conn, scope), query)]
+    with open_backend(resolved) as backend:
+        rows = [_row(listing) for listing in backend.list_bets(query)]
 
     render(rows, columns=LIST_COLUMNS, fmt=options.fmt, title="bet bets open")
 
@@ -142,9 +138,8 @@ def search(
         until=options.until,
     )
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
-        rows = [_row(listing) for listing in list_bets(Warehouse(conn, scope), filters)]
+    with open_backend(resolved) as backend:
+        rows = [_row(listing) for listing in backend.list_bets(filters)]
 
     render(rows, columns=LIST_COLUMNS, fmt=options.fmt, title=f"bet bets search {query!r}")
 

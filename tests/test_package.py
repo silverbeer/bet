@@ -9,6 +9,7 @@ SUBPACKAGES = [
     "analytics",
     "api",
     "cli",
+    "client",
     "database",
     "extraction",
     "importers",

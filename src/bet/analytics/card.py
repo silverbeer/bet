@@ -409,6 +409,80 @@ def card_to_dict(card: Card, *, share: bool = False) -> dict[str, Any]:
     return out
 
 
+def _decimal(value: Any) -> Decimal:
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    return None if value is None else _decimal(value)
+
+
+def _date(value: Any) -> date:
+    return value if isinstance(value, date) else date.fromisoformat(str(value))
+
+
+def _datetime(value: Any) -> datetime:
+    return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+
+
+def _record_from(data: Mapping[str, Any]) -> Record:
+    return Record(
+        won=int(data["won"]),
+        lost=int(data["lost"]),
+        push=int(data["push"]),
+        staked=_decimal(data["staked"]),
+        net=_decimal(data["net"]),
+        roi=_optional_decimal(data["roi"]),
+    )
+
+
+def card_from_dict(data: Mapping[str, Any]) -> Card:
+    """The ``Card`` a full (not ``share``) ``card_to_dict`` describes.
+
+    Its inverse: ``card_to_dict(card_from_dict(card_to_dict(c)))`` equals
+    ``card_to_dict(c)``, whether the values are Python's or their JSON forms
+    (Decimal and dates as strings). A remote CLI rebuilds the card from ``GET
+    /card`` with this and renders it exactly as a local one.
+    """
+    best = data.get("best")
+    pending = data["pending"]
+    voids = data.get("voids")
+    return Card(
+        window_start=_date(data["window_start"]),
+        window_end=_date(data["window_end"]),
+        tz_name=str(data["timezone"]),
+        days=int(data["days"]),
+        total=_record_from(data["record"]),
+        by_day=[DayRow(_date(d["day"]), _record_from(d)) for d in data["by_day"]],
+        by_sport=[SportRow(str(s["sport"]), _record_from(s)) for s in data["by_sport"]],
+        streak=data.get("streak"),
+        balances=[
+            AccountBalance(
+                account=str(a["account"]),
+                balance=_decimal(a["balance"]),
+                observed_at=_datetime(a["observed_at"]),
+                change=_optional_decimal(a["change"]),
+                since=None if a.get("since") is None else _datetime(a["since"]),
+            )
+            for a in data["balances"]
+        ],
+        balance_total=_decimal(data["balance_total"]),
+        balance_change=_optional_decimal(data["balance_change"]),
+        best=None
+        if best is None
+        else BestHit(
+            bet_id=UUID(str(best["bet_id"])),
+            sport=str(best["sport"]),
+            label=str(best["label"]),
+            odds_american=None if best["odds_american"] is None else int(best["odds_american"]),
+            net=_decimal(best["net"]),
+        ),
+        pending_count=int(pending["count"]),
+        pending_exposure=_decimal(pending["exposure"]),
+        voids=None if voids is None else int(voids),
+    )
+
+
 __all__ = [
     "MULTI",
     "OTHER",
@@ -419,6 +493,7 @@ __all__ = [
     "Record",
     "SportRow",
     "build_card",
+    "card_from_dict",
     "card_to_dict",
     "outcome",
     "record_of",

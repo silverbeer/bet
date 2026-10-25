@@ -21,6 +21,8 @@ from bet import __version__, log
 from bet.cli import tree
 from bet.cli.commands import balance_cmd, bets_cmd, config_cmd, user_cmd
 from bet.cli.commands.add_cmd import add as add_command
+from bet.cli.commands.auth_cmd import login as login_command
+from bet.cli.commands.auth_cmd import logout as logout_command
 from bet.cli.commands.card_cmd import card as card_command
 from bet.cli.commands.cashflow_cmd import deposit as deposit_command
 from bet.cli.commands.cashflow_cmd import withdraw as withdraw_command
@@ -63,6 +65,8 @@ app.add_typer(balance_cmd.app, name="balance")
 app.command("deposit", help="Record cash deposited into a sportsbook account.")(deposit_command)
 app.command("withdraw", help="Record cash withdrawn from a sportsbook account.")(withdraw_command)
 app.add_typer(user_cmd.app, name="user")
+app.command("login", help="Sign in to the BET API at api_url (remote mode).")(login_command)
+app.command("logout", help="Sign out of the BET API and forget its tokens.")(logout_command)
 tree.register(app)
 
 

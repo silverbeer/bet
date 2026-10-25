@@ -1,9 +1,10 @@
 """``bet user`` — create API users and set their passwords (ADR 0002 section 5).
 
-Local mode only: these open the warehouse file directly, and are how the
-operator invites someone, since the API has no signup endpoint. Both act on
-the tenant ``bet init`` created. ``set-password`` works for the user ``bet
-init`` created too, who owns every bet recorded before credentials existed.
+Local mode only: these open the warehouse file directly, and refuse when
+``api_url`` is set. They are how the operator invites someone, since the API
+has no signup endpoint. Both act on the tenant ``bet init`` created.
+``set-password`` works for the user ``bet init`` created too, who owns every
+bet recorded before credentials existed.
 
 A password is never an argument (it would land in shell history and ``ps``).
 It is prompted for twice with hidden input, or read from standard input with
@@ -19,6 +20,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
+from bet.cli.backend import refuse_remote
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
@@ -39,6 +41,7 @@ def create(
 ) -> None:
     """Add a user to the local tenant. Set their password with `bet user set-password`."""
     resolved = resolve()
+    refuse_remote(resolved, "bet user create")
     with connect(resolved.settings, create=False) as conn:
         migrator.require_current(conn)
         scope = create_user(conn, name)
@@ -78,6 +81,7 @@ def set_password(
 ) -> None:
     """Set or change a user's API password."""
     resolved = resolve()
+    refuse_remote(resolved, "bet user set-password")
     with connect(resolved.settings, create=False) as conn:
         migrator.require_current(conn)
         # After the checks above, so a wrong warehouse fails before prompting.

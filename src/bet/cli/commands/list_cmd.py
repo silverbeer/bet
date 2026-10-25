@@ -13,14 +13,11 @@ from typing import Annotated
 import typer
 
 from bet.analytics.card import selection_summary
+from bet.cli.backend import open_backend
 from bet.cli.context import options_from
 from bet.cli.output import render
 from bet.config import resolve
-from bet.database import identity
-from bet.database.connection import connect
-from bet.database.repository import Warehouse
 from bet.services.bets import BetListing, ListQuery
-from bet.services.bets import list_bets as list_service
 
 
 def _row(listing: BetListing) -> dict[str, object]:
@@ -64,9 +61,8 @@ def list_bets(
     )
     resolved = resolve()
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
-        rows = [_row(listing) for listing in list_service(Warehouse(conn, scope), query)]
+    with open_backend(resolved) as backend:
+        rows = [_row(listing) for listing in backend.list_bets(query)]
 
     columns = [
         "id",
