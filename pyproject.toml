@@ -32,6 +32,8 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
     "argon2-cffi>=25.1.0",
     "pyjwt>=2.15.1",
+    "httpx2>=2.16.0",
+    "keyring>=25",
 ]
 
 [project.scripts]
@@ -47,7 +49,6 @@ dev = [
     "pandas-stubs>=2.2",
     "types-pytz>=2025.1",
     "pre-commit>=4.6.2",
-    "httpx2>=2.16.0",
 ]
 
 [build-system]

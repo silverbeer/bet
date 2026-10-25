@@ -21,6 +21,7 @@ SETTABLE = (
     "backup_dir",
     "state_dir",
     "default_format",
+    "api_url",
 )
 
 

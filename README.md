@@ -81,6 +81,39 @@ this machine's when none is set. Pushes count in ROI; voids never do
 (`--include-void` adds a void count). `--format json` gives the same card as
 one object; `--since`/`--until` and `--format csv` are refused.
 
+## Remote mode: using a BET API
+
+By default `bet` opens the warehouse on this machine (**local mode**). Set
+`api_url` and every command goes through the BET API instead (**remote mode**,
+[ADR 0002](docs/decisions/0002-api-service.md)) -- the local warehouse is never
+opened. Output is the same in both modes, `--format json|csv` and the global
+filters included.
+
+```bash
+bet config set api_url https://mini.example.ts.net   # or export BET_API_URL=...
+bet login                     # prompts for user name and (hidden) password
+bet login -u tom --password-stdin < password-file    # scripted
+bet doctor                    # mode, API /healthz and /readyz, and whether you are logged in
+bet logout                    # revokes the session on the server, forgets it here
+```
+
+- **Tokens** are kept in the macOS Keychain (service `bet-api`, one item per
+  `api_url`), never in the config file. An expired access token is refreshed
+  automatically; when the session itself has expired or been revoked, the
+  tokens are removed and the command says to run `bet login`. `bet logout`
+  clears them even when the server is unreachable.
+- **`--source-file`** on `bet add`, `bet balance add`, `bet deposit` and
+  `bet withdraw` is uploaded to the server first, and the record cites it.
+  The server archives images only (PNG, JPEG, HEIC, WebP, GIF).
+- **Unreachable server**: a clear error naming `api_url` (exit code 4, as for
+  an unavailable warehouse) -- check Tailscale and `bet doctor`.
+- **Local only**: `bet init`, `bet user create` and `bet user set-password` act
+  on a warehouse file, so they refuse in remote mode; run them where the
+  warehouse lives (e.g. `kubectl exec ... -- bet user create NAME`). Prompted
+  `bet add` (without `--non-interactive`) is local only for now.
+- Unset `api_url` (remove it from the config file and unset `BET_API_URL`) to
+  return to local mode.
+
 ## Container image
 
 The API ships as an image with both `bet-api` and `bet` in it (see

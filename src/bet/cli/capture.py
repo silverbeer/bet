@@ -22,6 +22,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
 
+from bet.client.api import RemoteUnknownLabelError
 from bet.database.repository import Warehouse
 from bet.errors import UsageError
 from bet.models.bet import CaptureMethod
@@ -114,7 +115,8 @@ def check_provenance(
 def markup_safe_labels() -> Iterator[None]:
     """Escape the account labels in an unknown-label error.
 
-    Labels are user text; the error printer reads Rich markup.
+    Labels are user text; the error printer reads Rich markup. The API's
+    error carries the same text unescaped, and only labels in it can need it.
     """
     try:
         yield
@@ -122,6 +124,11 @@ def markup_safe_labels() -> Iterator[None]:
         raise UsageError(
             f"no {exc.sportsbook_code} account is labelled {escape(repr(exc.label))}.",
             remediation="Known labels: " + escape(", ".join(exc.known_labels)),
+        ) from exc
+    except RemoteUnknownLabelError as exc:
+        raise UsageError(
+            escape(exc.message),
+            remediation=escape(exc.remediation) if exc.remediation else None,
         ) from exc
 
 

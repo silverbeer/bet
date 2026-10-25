@@ -20,7 +20,7 @@ from typing import Annotated, Any, Self
 from uuid import UUID
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bet.errors import ConfigError
 from bet.paths import (
@@ -92,6 +92,22 @@ class Settings(BaseModel):
     user_id: UUID | None = None
 
     thresholds: Thresholds = Field(default_factory=Thresholds)
+
+    # The BET API to use instead of the local warehouse (ADR 0002). Unset is
+    # local mode; set, every command goes through the API and the local
+    # warehouse is never opened.
+    api_url: str | None = None
+
+    @field_validator("api_url", mode="after")
+    @classmethod
+    def _api_url(cls, value: str | None) -> str | None:
+        """An ``http(s)://`` URL without a trailing slash, or ``None`` when blank."""
+        url = (value or "").strip().rstrip("/")
+        if not url:
+            return None
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"api_url must be an http:// or https:// URL, not {value!r}")
+        return url
 
     @model_validator(mode="after")
     def _derive_and_validate_paths(self) -> Self:

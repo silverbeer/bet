@@ -48,6 +48,15 @@ class DatabaseError(BetError):
     exit_code = 4
 
 
+class ApiUnreachableError(DatabaseError):
+    """The BET API named by ``api_url`` could not be reached.
+
+    A ``DatabaseError``, and so the same exit code: in remote mode the API *is*
+    the warehouse, and a script that branches on "warehouse unavailable" should
+    not have to learn a second code for it.
+    """
+
+
 class NotFoundError(BetError):
     """A requested record does not exist."""
 

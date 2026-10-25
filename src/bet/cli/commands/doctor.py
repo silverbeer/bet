@@ -4,6 +4,11 @@ Each check reports pass, warn or fail with remediation. ``doctor`` exits
 non-zero if anything failed, so it is usable in a script or a CI step, and it
 never raises on a failing check — reporting every problem at once is more
 useful than stopping at the first.
+
+The ``mode`` row says which backend commands use (``bet.cli.backend``). In
+remote mode the local data and warehouse checks are skipped -- nothing local is
+opened -- and the API's ``/healthz`` and ``/readyz`` and this CLI's login are
+checked instead. No token is ever shown.
 """
 
 from __future__ import annotations
@@ -17,8 +22,10 @@ from pathlib import Path
 
 import typer
 
+from bet.cli.backend import api_session
 from bet.cli.context import options_from
 from bet.cli.output import render
+from bet.client.api import ApiClient
 from bet.config import ResolvedConfig, resolve
 from bet.errors import BetError
 from bet.paths import find_git_work_tree
@@ -256,6 +263,45 @@ def _duckdb_available() -> Check:
     return Check("duckdb cli", Status.PASS, "not on PATH (optional)")
 
 
+def _mode(config: ResolvedConfig) -> Check:
+    url = config.settings.api_url
+    if url is None:
+        return Check("mode", Status.PASS, "local (api_url unset)")
+    return Check("mode", Status.PASS, f"remote: {url}")
+
+
+def _api_probe(client: ApiClient, path: str, name: str) -> Check:
+    try:
+        body = client.call("GET", path, auth=False)
+    except BetError as exc:
+        return Check(name, Status.FAIL, exc.message, exc.remediation or "")
+    status = body.get("status") if isinstance(body, dict) else None
+    return Check(name, Status.PASS, f"{path}: {status}")
+
+
+def _api_login(client: ApiClient) -> Check:
+    """Whether a session is stored, and whether the API accepts it."""
+    try:
+        session = client.tokens.load()
+        if session is None:
+            return Check(
+                "api login", Status.WARN, "not logged in", f"Run `bet login` for {client.api_url}."
+            )
+        me = client.get("/me")
+    except BetError as exc:
+        return Check("api login", Status.FAIL, exc.message, exc.remediation or "")
+    return Check("api login", Status.PASS, f"logged in as {me.get('display_name')}")
+
+
+def _remote_checks(api_url: str) -> list[Check]:
+    with api_session(api_url) as client:
+        return [
+            _api_probe(client, "/healthz", "api health"),
+            _api_probe(client, "/readyz", "api readiness"),
+            _api_login(client),
+        ]
+
+
 @dataclass(slots=True)
 class _Report:
     checks: list[Check]
@@ -283,7 +329,11 @@ def run_checks(config: ResolvedConfig, *, cwd: Path | None = None) -> _Report:
     )
     checks = [check() for check in standalone]
     checks.append(_pre_commit_hook(cwd if cwd is not None else Path.cwd()))
-    checks.extend(check(config) for check in with_config)
+    checks.append(_mode(config))
+    if config.settings.api_url is not None:
+        checks.extend(_remote_checks(config.settings.api_url))
+    else:
+        checks.extend(check(config) for check in with_config)
     return _Report(checks)
 
 

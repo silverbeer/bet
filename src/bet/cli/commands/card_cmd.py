@@ -27,15 +27,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import typer
 
 from bet.analytics.card import card_to_dict
+from bet.cli.backend import open_backend
 from bet.cli.card_render import render_card
 from bet.cli.context import options_from
 from bet.cli.output import _plain
 from bet.config import OutputFormat, resolve
-from bet.database import identity
-from bet.database.connection import connect
-from bet.database.repository import Warehouse
 from bet.errors import UsageError
-from bet.services.card import CardQuery, card_summary
+from bet.services.card import CardQuery
 
 
 def _named(key: str) -> tzinfo | None:
@@ -101,16 +99,16 @@ def card(
 
     resolved = resolve()
 
-    with connect(resolved.settings) as conn:
-        scope = identity.resolve_scope(conn, resolved)
+    with open_backend(resolved) as backend:
+        # Remote mode sends this zone to the API, so its days are this CLI's.
         query = CardQuery(
-            tz=_zone(identity.user_timezone(conn, scope)),
+            tz=_zone(backend.user_timezone()),
             days=days,
             sportsbook=options.sportsbook,
             sport=options.sport,
             include_void=options.include_void,
         )
-        result = card_summary(Warehouse(conn, scope), query)
+        result = backend.card(query)
 
     if options.fmt is OutputFormat.JSON:
         json.dump(card_to_dict(result, share=share), sys.stdout, indent=2, default=_plain)
