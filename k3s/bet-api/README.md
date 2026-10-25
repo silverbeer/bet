@@ -13,6 +13,7 @@ reachable **only over the tailnet**, at
 | `service.yaml` | `ClusterIP` on port 8787 -- not published on the Mac by the cluster at all |
 | `deploy/io.silverbeer.bet.portforward.plist` + `scripts/bet-portforward.sh` | launchd agent on the mini: `kubectl port-forward --address 127.0.0.1 svc/bet-api 8787`, restarted when `/healthz` stops answering through it |
 | Secret `bet-api-jwt` | `BET_JWT_SIGNING_KEY`, created by the deploy script, never committed |
+| `backup-cronjob.yaml` + Secret `bet-api-maintenance` | nightly consistent backup; see [RESTORE.md](RESTORE.md) |
 
 ## How a request gets in
 
