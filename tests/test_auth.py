@@ -18,7 +18,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import jwt
@@ -350,7 +350,7 @@ def test_an_unsigned_token_is_refused(
 ) -> None:
     w, _ = alice
     claims = _claims(auth.issue_tokens(w, tokens).access_token)
-    unsigned = jwt.encode(claims, key=None, algorithm="none")
+    unsigned = jwt.encode(claims, key=cast(Any, None), algorithm="none")
     with pytest.raises(AuthenticationError, match="invalid"):
         auth.authenticate(conn, unsigned, tokens)
 
