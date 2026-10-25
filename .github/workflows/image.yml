@@ -79,3 +79,54 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=image-arm64
           cache-to: type=gha,scope=image-arm64,mode=max
+
+  # GitOps: point k3s/bet-api/deployment.yaml at the image just pushed, so
+  # `git pull && ./scripts/deploy-k3s.sh` on the mini deploys main. Pushes to
+  # main with GH_PAT (which bypasses branch protection); [skip ci] stops the
+  # commit from building another image. Skips cleanly until GH_PAT exists.
+  bump-tag:
+    name: bump deployment image tag
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_PAT: ${{ secrets.GH_PAT }}
+    steps:
+      - name: Check for GH_PAT
+        id: pat
+        run: |
+          if [ -n "$GH_PAT" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::GH_PAT is not set; deployment.yaml keeps its current image tag."
+          fi
+
+      - uses: actions/checkout@v5
+        if: steps.pat.outputs.present == 'true'
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Update image tag
+        if: steps.pat.outputs.present == 'true'
+        run: |
+          FILE=k3s/bet-api/deployment.yaml
+          sed -i -E "s|(image: ghcr.io/silverbeer/bet:)[0-9a-f]{40}( # bet-api-image)|\1${GITHUB_SHA}\2|" "$FILE"
+          grep -n "# bet-api-image" "$FILE"
+
+      - name: Commit and push
+        if: steps.pat.outputs.present == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k3s/bet-api/deployment.yaml
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+            git commit -m "chore: deploy bet-api image ${SHORT_SHA}
+
+          [skip ci]"
+            git push
+          fi

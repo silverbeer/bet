@@ -1,0 +1,17 @@
+# The warehouse: bet.duckdb, the source archive, backups, and the config file
+# `bet init` records the identity in. local-path keeps it on the mini's disk
+# (inside the Rancher Desktop VM), so it is single-node and RWO by nature --
+# which is what one DuckDB writer wants anyway.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bet-data
+  namespace: bet
+  labels:
+    app: bet
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bet-api
+  namespace: bet
+  labels:
+    app: bet
+    component: api
+spec:
+  # The API embeds DuckDB in-process as the warehouse's only writer (ADR 0002),
+  # so replicas and strategy are correctness, not capacity planning:
+  #   - replicas: 1   a second pod could not open the file at all
+  #   - Recreate      RollingUpdate would start the new pod while the old one
+  #                   still holds the DuckDB lock, and it would never get ready
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bet
+      component: api
+  template:
+    metadata:
+      labels:
+        app: bet
+        component: api
+    spec:
+      # Kubernetes would inject BET_API_SERVICE_PORT, BET_API_PORT_8787_TCP_*
+      # ... for the bet-api Service. BET's config owns the BET_ prefix and
+      # refuses unknown keys, so those crash `bet init` at startup.
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The image's `bet` user. fsGroup makes the local-path volume
+        # writable by it.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Applies any pending migrations (and creates the warehouse on a fresh
+        # volume) before the server opens it. Idempotent: an up-to-date
+        # warehouse is left as it is.
+        - name: migrate
+          image: ghcr.io/silverbeer/bet:7035ae0cf7f51e12ae7e2d4bc8ac5b8bf128de1d # bet-api-image
+          command: ["bet", "init"]
+          env:
+            - name: TZ
+              value: America/New_York
+            - name: NO_COLOR
+              value: "1"
+          securityContext: &containerSecurity
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts: &mounts
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: api
+          image: ghcr.io/silverbeer/bet:7035ae0cf7f51e12ae7e2d4bc8ac5b8bf128de1d # bet-api-image
+          # The image's CMD: bet-api --host 0.0.0.0 --port 8000, one worker.
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: TZ
+              value: America/New_York
+            - name: NO_COLOR
+              value: "1"
+            # Created once by scripts/deploy-k3s.sh and never rotated by it:
+            # a new key signs every existing session out.
+            - name: BET_JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bet-api-jwt
+                  key: BET_JWT_SIGNING_KEY
+          # /healthz never touches the database; /readyz does. A pod that
+          # cannot read the warehouse is taken out of the Service, not killed.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "192Mi"
+              cpu: "50m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          securityContext: *containerSecurity
+          volumeMounts: *mounts
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bet-data
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,23 @@
+# ClusterIP only: nothing in the cluster publishes this port on the Mac. On
+# macOS, Rancher Desktop forwards LoadBalancer/NodePort ports on every
+# interface and the mini's firewall is off, so either would put the API on the
+# LAN. Instead a launchd agent on the mini (deploy/io.silverbeer.bet.portforward.plist)
+# runs `kubectl port-forward --address 127.0.0.1`, and `tailscale serve`
+# publishes that loopback port to the tailnet with TLS. See README.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bet-api
+  namespace: bet
+  labels:
+    app: bet
+    component: api
+spec:
+  type: ClusterIP
+  selector:
+    app: bet
+    component: api
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http
