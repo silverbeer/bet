@@ -79,6 +79,13 @@ spec:
                 secretKeyRef:
                   name: bet-api-jwt
                   key: BET_JWT_SIGNING_KEY
+            # Guards /maintenance/* (the nightly backup CronJob). Not a user
+            # login; without it those routes are disabled.
+            - name: BET_MAINTENANCE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bet-api-maintenance
+                  key: BET_MAINTENANCE_TOKEN
           # /healthz never touches the database; /readyz does. A pod that
           # cannot read the warehouse is taken out of the Service, not killed.
           startupProbe:

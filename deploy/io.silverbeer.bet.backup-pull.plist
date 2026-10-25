@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Pulls the mini's newest nightly BET backup to this Mac (SB-1404). Runs on
+  the MacBook Air, not the mini. A template: fill in __REPO__ and __HOME__
+  (scripts/install-backup-pull.sh does) and load it into ~/Library/LaunchAgents.
+  Hourly; a run with nothing new is a no-op. Holds no secrets, and never may.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.silverbeer.bet.backup-pull</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__REPO__/scripts/pull-backup.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>3600</integer>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/bet-backup-pull.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/bet-backup-pull.log</string>
+</dict>
+</plist>

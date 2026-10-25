@@ -54,6 +54,7 @@ from bet import log
 from bet.analytics.card import card_to_dict
 from bet.api import ApiSettings, create_app
 from bet.api.deps import current_scope
+from bet.api.maintenance import require_maintenance
 from bet.config import Settings
 from bet.database import identity, migrator
 from bet.database.connection import connect
@@ -78,6 +79,13 @@ PUBLIC_PATHS = frozenset(
     {"/healthz", "/readyz", "/docs", "/docs/oauth2-redirect", "/openapi.json", "/redoc"}
 )
 PUBLIC_PREFIXES = ("/auth/",)
+
+# Operator routes (bet.api.maintenance): not user-scoped, so not in the user
+# isolation sweep, and not public either. They are guarded by the static
+# BET_MAINTENANCE_TOKEN instead of CurrentScope; the maintenance tests below
+# check every one of them refuses user tokens, and that the maintenance token
+# opens no user route.
+MAINTENANCE_PREFIXES = ("/maintenance/",)
 
 # What user B (or C) may get back when aiming at user A's data: an empty or
 # own-data success, or not found. Never 401 (the token is valid, so the route
@@ -523,6 +531,10 @@ def is_public(path: str) -> bool:
     return path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
 
 
+def is_maintenance(path: str) -> bool:
+    return path.startswith(MAINTENANCE_PREFIXES)
+
+
 @dataclass(frozen=True)
 class Endpoint:
     """One method on one route, with the path and dependencies it is served with."""
@@ -533,8 +545,8 @@ class Endpoint:
     has_body: bool
 
 
-def protected_routes(app: FastAPI) -> list[Endpoint]:
-    """Every endpoint that must require a token, as the app serves it.
+def routes(app: FastAPI) -> list[Endpoint]:
+    """Every endpoint the app serves, public or not.
 
     ``app.routes`` holds included routers unexpanded, so routes are walked with
     ``iter_route_contexts`` -- what FastAPI's own OpenAPI generation uses --
@@ -549,10 +561,20 @@ def protected_routes(app: FastAPI) -> list[Endpoint]:
             has_body=context.body_field is not None or bool(context.dependant.body_params),
         )
         for context in iter_route_contexts(app.routes)
-        if isinstance(context.original_route, APIRoute) and not is_public(str(context.path))
+        if isinstance(context.original_route, APIRoute)
         for method in sorted(context.methods or ())
     ]
     return sorted(found, key=lambda e: (e.path, e.method))
+
+
+def protected_routes(app: FastAPI) -> list[Endpoint]:
+    """Every endpoint that must require a user's token."""
+    return [e for e in routes(app) if not is_public(e.path) and not is_maintenance(e.path)]
+
+
+def maintenance_routes(app: FastAPI) -> list[Endpoint]:
+    """Every endpoint that must require the maintenance token."""
+    return [e for e in routes(app) if is_maintenance(e.path)]
 
 
 def _unregistered(method: str, path: str, reason: str) -> None:
@@ -621,6 +643,8 @@ def _discovery_app() -> FastAPI:
 
 PROTECTED: list[RouteKey] = [(e.method, e.path) for e in protected_routes(_discovery_app())]
 _IDS = [f"{m} {p}" for m, p in PROTECTED]
+MAINTENANCE: list[RouteKey] = [(e.method, e.path) for e in maintenance_routes(_discovery_app())]
+_MAINTENANCE_IDS = [f"{m} {p}" for m, p in MAINTENANCE]
 
 
 def _endpoint(app: FastAPI, method: str, path: str) -> Endpoint:
@@ -672,7 +696,8 @@ def _leaked(response: httpx.Response, victim: Seeded, call: Call | None = None) 
 def test_discovery_finds_the_protected_surface() -> None:
     """If this shrinks to nothing, the parametrized tests below prove nothing."""
     assert ("GET", "/me") in PROTECTED
-    assert not any(is_public(path) for _, path in PROTECTED)
+    assert not any(is_public(path) or is_maintenance(path) for _, path in PROTECTED)
+    assert ("POST", "/maintenance/backup") in MAINTENANCE
 
 
 def test_an_unbuildable_route_fails_loudly_rather_than_skipping() -> None:
@@ -787,6 +812,61 @@ def test_no_other_user_reaches_user_as_data(api: Api, method: str, path: str) ->
                 f"{where} shows none of A's own data, so B's result proves nothing. "
                 "Aim its ROUTE_CALLS entry at A's data, or set owner_sees_data=False."
             )
+
+
+# ------------------------------------------------------ the maintenance routes
+
+
+def _with_maintenance_token(api: Api) -> str:
+    """Enable the maintenance routes on the served app; return the token."""
+    token = secrets.token_urlsafe(48)
+    api.app.state.settings = api.world.settings.model_copy(
+        update={"maintenance_token": SecretStr(token)}
+    )
+    return token
+
+
+def test_discovery_finds_the_maintenance_surface() -> None:
+    assert ("GET", "/maintenance/backups/latest") in MAINTENANCE
+
+
+@pytest.mark.parametrize(("method", "path"), MAINTENANCE, ids=_MAINTENANCE_IDS)
+def test_every_maintenance_route_is_guarded_by_the_maintenance_token(
+    method: str, path: str
+) -> None:
+    """Structural: the static-token guard, and never a user's scope."""
+    (endpoint,) = [
+        e for e in maintenance_routes(_discovery_app()) if (e.method, e.path) == (method, path)
+    ]
+    assert _depends_on(endpoint.dependant, require_maintenance)
+    assert not _depends_on(endpoint.dependant, current_scope)
+
+
+@pytest.mark.parametrize(("method", "path"), MAINTENANCE, ids=_MAINTENANCE_IDS)
+def test_a_user_token_never_opens_a_maintenance_route(api: Api, method: str, path: str) -> None:
+    """Disabled (no token configured): 404 to everyone. Enabled: a user's token is 401."""
+    for viewer in ("alice", "bob", "carol"):
+        response = api.client.request(method, path, headers=api.bearer(viewer))
+        assert response.status_code == 404, f"{viewer} -> {method} {path} while disabled"
+
+    _with_maintenance_token(api)
+    for viewer in ("alice", "bob", "carol"):
+        response = api.client.request(method, path, headers=api.bearer(viewer))
+        assert response.status_code == 401, f"{viewer} -> {method} {path}"
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+    backups = api.world.settings.bet.backup_dir
+    assert backups is not None
+    assert not backups.exists() or not any(backups.iterdir())
+
+
+@pytest.mark.parametrize(("method", "path"), PROTECTED, ids=_IDS)
+def test_the_maintenance_token_opens_no_user_route(api: Api, method: str, path: str) -> None:
+    token = _with_maintenance_token(api)
+    headers = {"Authorization": f"Bearer {token}"}
+    for call in calls_for(_endpoint(api.app, method, path), api.world.a):
+        response = send(api.client, method, path, call, headers)
+        assert response.status_code == 401, f"{method} {_url(path, call)}"
+        assert not _leaked(response, api.world.a)
 
 
 # --------------------------------------------------- scope only from the token

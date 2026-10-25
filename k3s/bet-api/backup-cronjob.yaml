@@ -1,0 +1,88 @@
+# Nightly consistent backup (SB-1404).
+#
+# The API process is the warehouse's only writer and holds the DuckDB file
+# open, so a backup cannot be a file copy or a second process opening it. This
+# job asks the API to make one: POST /maintenance/backup writes a
+# transactionally consistent copy to /data/backups/bet-<UTC stamp>.duckdb on
+# the warehouse volume and prunes copies older than KEEP_DAYS. The off-mini
+# copy is pulled from there by scripts/pull-backup.sh on the MacBook Air.
+#
+# The token is its own Secret (bet-api-maintenance), created by
+# scripts/deploy-k3s.sh; it is not a user login and opens no user route.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: bet-api-backup
+  namespace: bet
+  labels:
+    app: bet
+    component: backup
+spec:
+  schedule: "30 3 * * *"
+  timeZone: America/New_York
+  # A missed night (mini asleep, cluster restarting) runs once when it can,
+  # never twice at once.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 43200
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app: bet
+            component: backup
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: trigger
+              # Same image as the API (it has python; no extra image to pin).
+              image: ghcr.io/silverbeer/bet:7035ae0cf7f51e12ae7e2d4bc8ac5b8bf128de1d # bet-api-image
+              env:
+                - name: KEEP_DAYS
+                  value: "14"
+                - name: BET_MAINTENANCE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: bet-api-maintenance
+                      key: BET_MAINTENANCE_TOKEN
+              command:
+                - python
+                - -c
+                - |
+                  import json, os, sys, urllib.request
+                  req = urllib.request.Request(
+                      "http://bet-api.bet.svc.cluster.local:8787/maintenance/backup"
+                      f"?keep_days={os.environ['KEEP_DAYS']}",
+                      method="POST",
+                      headers={"Authorization": "Bearer " + os.environ["BET_MAINTENANCE_TOKEN"]},
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=600) as resp:
+                          body = json.load(resp)
+                  except urllib.error.HTTPError as exc:
+                      print(f"backup failed: HTTP {exc.code} {exc.read()[:500]!r}", file=sys.stderr)
+                      sys.exit(1)
+                  print(json.dumps(body, indent=2))
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  memory: "32Mi"
+                  cpu: "10m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "200m"

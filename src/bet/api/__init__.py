@@ -11,6 +11,8 @@ and the config file resolve exactly as they do for ``bet``. It must already
 exist and be migrated (``bet init``); ``/readyz`` reports pending migrations.
 ``BET_JWT_SIGNING_KEY`` must be set, or the server refuses to start (see
 ``bet.api.settings``); users and passwords come from ``bet user``.
+``BET_MAINTENANCE_TOKEN``, if set, opens the backup routes under
+``/maintenance`` (see ``bet.api.maintenance``); unset, they answer 404.
 OpenAPI is served at ``/docs`` and ``/openapi.json``.
 """
 

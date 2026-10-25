@@ -16,6 +16,7 @@ from bet.api import (
     cash_flows,
     errors,
     health,
+    maintenance,
     me,
     similar,
     sources,
@@ -78,4 +79,5 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.include_router(similar.router)
     app.include_router(cash_flows.router)
     app.include_router(sources.router)
+    app.include_router(maintenance.router)
     return app
