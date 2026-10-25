@@ -47,7 +47,7 @@ spec:
           containers:
             - name: trigger
               # Same image as the API (it has python; no extra image to pin).
-              image: ghcr.io/silverbeer/bet:7035ae0cf7f51e12ae7e2d4bc8ac5b8bf128de1d # bet-api-image
+              image: ghcr.io/silverbeer/bet:fe83a3370ef7be707214163440c161569e5cdefc # bet-api-image
               env:
                 - name: KEEP_DAYS
                   value: "14"
