@@ -25,6 +25,10 @@ spec:
         app: bet
         component: api
     spec:
+      # Kubernetes would inject BET_API_SERVICE_PORT, BET_API_PORT_8787_TCP_*
+      # ... for the bet-api Service. BET's config owns the BET_ prefix and
+      # refuses unknown keys, so those crash `bet init` at startup.
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         # The image's `bet` user. fsGroup makes the local-path volume
