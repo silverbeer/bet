@@ -18,6 +18,14 @@ exporting these never affects the CLI and the key never enters ``Settings``:
 Without a usable signing key the server refuses to start: every route but the
 health checks needs one, and a pod that reports ready while refusing every
 request is harder to diagnose than one that fails at startup with this reason.
+
+The maintenance routes (``bet.api.maintenance``) are opened by a static token,
+read from ``BET_MAINTENANCE_*`` -- also a prefix ``bet.config`` skips:
+
+* ``BET_MAINTENANCE_TOKEN`` -- optional, at least 32 bytes. Unset or blank,
+  the maintenance routes answer 404 as if they did not exist; set but short,
+  the server refuses to start. It is not a user login: it opens no user route,
+  and no user's token opens a maintenance route.
 """
 
 from __future__ import annotations
@@ -38,6 +46,8 @@ WORKERS_ENV = "WEB_CONCURRENCY"
 SIGNING_KEY_ENV = "BET_JWT_SIGNING_KEY"
 ACCESS_TTL_ENV = "BET_JWT_ACCESS_TTL_SECONDS"
 REFRESH_TTL_ENV = "BET_JWT_REFRESH_TTL_SECONDS"
+MAINTENANCE_TOKEN_ENV = "BET_MAINTENANCE_TOKEN"
+MIN_MAINTENANCE_TOKEN_BYTES = 32
 
 KEY_REMEDIATION = (
     f"Set {SIGNING_KEY_ENV} to a random value of at least {MIN_SIGNING_KEY_BYTES} bytes,\n"
@@ -54,6 +64,8 @@ class ApiSettings(BaseModel):
     bet: Settings
     auth: TokenSettings
     workers: Annotated[int, Field(ge=1)] = 1
+    # None: the maintenance routes are disabled and answer 404.
+    maintenance_token: SecretStr | None = None
 
     @classmethod
     def from_env(
@@ -66,6 +78,7 @@ class ApiSettings(BaseModel):
             bet=settings,
             auth=token_settings(environ),
             workers=1 if workers is None else workers,
+            maintenance_token=maintenance_token(environ),
         )
 
 
@@ -100,3 +113,20 @@ def token_settings(environ: Mapping[str, str]) -> TokenSettings:
                 f"{KEY_REMEDIATION}\n{ACCESS_TTL_ENV} and {REFRESH_TTL_ENV} must be positive."
             ),
         ) from None
+
+
+def maintenance_token(environ: Mapping[str, str]) -> SecretStr | None:
+    """Read ``BET_MAINTENANCE_TOKEN``: None when unset, refused when short, never echoed."""
+    token = environ.get(MAINTENANCE_TOKEN_ENV, "").strip()
+    if not token:
+        return None
+    if len(token.encode()) < MIN_MAINTENANCE_TOKEN_BYTES:
+        raise ConfigError(
+            f"{MAINTENANCE_TOKEN_ENV} is shorter than {MIN_MAINTENANCE_TOKEN_BYTES} bytes.",
+            remediation=(
+                f"Set {MAINTENANCE_TOKEN_ENV} to a random value of at least "
+                f"{MIN_MAINTENANCE_TOKEN_BYTES} bytes, for example the output of\n"
+                f"`openssl rand -base64 48`, or unset it to disable the maintenance routes."
+            ),
+        )
+    return SecretStr(token)

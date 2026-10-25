@@ -45,20 +45,26 @@ KUBECTL=(kubectl --context "$CONTEXT")
 # --- manifests -----------------------------------------------------------------
 "${KUBECTL[@]}" apply -f "$MANIFESTS/namespace.yaml"
 
-# The signing key is created once and never rotated here: a new key signs out
-# every session. It goes from openssl straight into the Secret, never to the
-# terminal or a file.
-if ! "${KUBECTL[@]}" -n "$NAMESPACE" get secret bet-api-jwt >/dev/null 2>&1; then
-  openssl rand -hex 32 | tr -d '\n' |
-    "${KUBECTL[@]}" -n "$NAMESPACE" create secret generic bet-api-jwt \
-      --from-file=BET_JWT_SIGNING_KEY=/dev/stdin >/dev/null
-  echo "secret/bet-api-jwt created"
-else
-  echo "secret/bet-api-jwt unchanged (exists)"
-fi
+# Secrets are created once and never rotated here: a new JWT key signs out
+# every session, and the maintenance token is shared with the backup CronJob.
+# Each value goes from openssl straight into its Secret, never to the terminal
+# or a file.
+ensure_secret() {
+  local name=$1 key=$2
+  if "${KUBECTL[@]}" -n "$NAMESPACE" get secret "$name" >/dev/null 2>&1; then
+    echo "secret/$name unchanged (exists)"
+  else
+    openssl rand -hex 32 | tr -d '\n' |
+      "${KUBECTL[@]}" -n "$NAMESPACE" create secret generic "$name" \
+        --from-file="$key=/dev/stdin" >/dev/null
+    echo "secret/$name created"
+  fi
+}
+ensure_secret bet-api-jwt BET_JWT_SIGNING_KEY
+ensure_secret bet-api-maintenance BET_MAINTENANCE_TOKEN
 
 "${KUBECTL[@]}" apply -f "$MANIFESTS/pvc.yaml" -f "$MANIFESTS/service.yaml" \
-  -f "$MANIFESTS/deployment.yaml"
+  -f "$MANIFESTS/deployment.yaml" -f "$MANIFESTS/backup-cronjob.yaml"
 "${KUBECTL[@]}" -n "$NAMESPACE" rollout status deployment/bet-api --timeout=180s
 
 image=$("${KUBECTL[@]}" -n "$NAMESPACE" get deployment bet-api \
