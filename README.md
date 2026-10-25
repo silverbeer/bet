@@ -90,7 +90,7 @@ opened. Output is the same in both modes, `--format json|csv` and the global
 filters included.
 
 ```bash
-bet config set api_url https://mini.example.ts.net   # or export BET_API_URL=...
+bet config set api_url https://your-server.your-tailnet.ts.net   # or export BET_API_URL=...
 bet login                     # prompts for user name and (hidden) password
 bet login -u tom --password-stdin < password-file    # scripted
 bet doctor                    # mode, API /healthz and /readyz, and whether you are logged in
@@ -113,6 +113,37 @@ bet logout                    # revokes the session on the server, forgets it he
   `bet add` (without `--non-interactive`) is local only for now.
 - Unset `api_url` (remove it from the config file and unset `BET_API_URL`) to
   return to local mode.
+
+
+### Running the server, and moving a warehouse onto it
+
+The reference deployment is k3s on a Mac mini, reachable only over Tailscale:
+manifests, deploy script and runbook in [`k3s/bet-api/`](k3s/bet-api/README.md),
+and nightly backups plus restore in
+[`k3s/bet-api/RESTORE.md`](k3s/bet-api/RESTORE.md).
+
+Moving an existing local warehouse onto the server, as done 2026-10-25:
+
+1. Stop recording. With no `bet` process running, copy `bet.duckdb` (and any
+   `.wal`) aside as a backup.
+2. In the copy, set your user's stored time zone (`core.user.timezone`; `bet
+   init` defaults it to `UTC`). The server has no meaningful machine zone, so
+   this is what places a late game on the right day.
+3. Make the server's config (`/data/config/bet/config.toml`) name the copy's
+   `tenant_id` and `user_id`. A fresh server `bet init` recorded its own, and
+   `bet doctor` -- which the restore script runs -- refuses a mismatch.
+4. `scripts/restore-backup.sh --file <copy>` on the server.
+5. Copy the source archive (`<data_dir>/sources/`, content-addressed: every
+   file's name is its sha256) onto the server volume's `/data/sources/`, then
+   check counts and hashes.
+6. Compare `bet card`, `bet list` and `bet balance` (table and `--format json`)
+   local vs remote. They must match byte for byte.
+7. `bet config set api_url ...`, `bet login`. Then rename the local file
+   (`bet.duckdb.moved-to-api-<date>`) so nothing can write to it again.
+
+On macOS, a `data_dir` inside iCloud Drive is privacy-protected: Terminal and
+agent shells may be refused access to it (`Operation not permitted`). Copying
+the `sources` folder out with Finder works.
 
 ## Container image
 
