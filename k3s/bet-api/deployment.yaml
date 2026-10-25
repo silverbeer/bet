@@ -43,7 +43,7 @@ spec:
         # volume) before the server opens it. Idempotent: an up-to-date
         # warehouse is left as it is.
         - name: migrate
-          image: ghcr.io/silverbeer/bet:7035ae0cf7f51e12ae7e2d4bc8ac5b8bf128de1d # bet-api-image
+          image: ghcr.io/silverbeer/bet:fe83a3370ef7be707214163440c161569e5cdefc # bet-api-image
           command: ["bet", "init"]
           env:
             - name: TZ
@@ -62,7 +62,7 @@ spec:
               mountPath: /tmp
       containers:
         - name: api
-          image: ghcr.io/silverbeer/bet:7035ae0cf7f51e12ae7e2d4bc8ac5b8bf128de1d # bet-api-image
+          image: ghcr.io/silverbeer/bet:fe83a3370ef7be707214163440c161569e5cdefc # bet-api-image
           # The image's CMD: bet-api --host 0.0.0.0 --port 8000, one worker.
           ports:
             - name: http
