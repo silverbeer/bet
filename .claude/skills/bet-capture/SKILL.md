@@ -76,8 +76,19 @@ image archives once, and two bets read off one screenshot cite one file.
 ### Settling a slip that already shows its outcome
 
 ```bash
-bet settle <bet_id> --result won --leg-result 1=won --leg-result 2=lost
+bet settle <bet_id> --result won --leg-result 1=won --leg-result 2=lost \
+  --settled-at 2026-09-08T23:15:00-04:00
 ```
+
+**Always pass `--settled-at` with when the game ended.** `bet card` puts a bet
+on the day it *settled* and builds the streak in settle order, so a slip
+captured days later and settled with the default lands on today's row
+(SB-1521: seventeen bets from four days showed as one). The slip rarely shows
+the end time: use kickoff/tip-off plus ~3h (NFL/NCAAF), ~2.5h (NBA), ~2h
+(soccer), in ET — EDT `-04:00` until the first Sunday of November, then EST
+`-05:00`. The day must be right; the minute is an estimate. `bet settle`
+refuses the default for a bet placed over 24h ago; `--settled-at now` is the
+explicit opt-out for one that really did just settle.
 
 `--result` is one of `won|lost|push|void|partial|cashed_out`. Use
 `--return` only when the slip states an amount returned that differs from the

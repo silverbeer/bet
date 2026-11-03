@@ -9,7 +9,7 @@ import os
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -28,7 +28,9 @@ from bet.models.ownership import SportsbookAccount
 
 runner = CliRunner()
 
-PLACED = datetime(2026, 8, 1, 16, 0, tzinfo=UTC)
+# Recent, so --settled-at may default to now (SB-1521).
+PLACED = datetime.now(UTC) - timedelta(hours=1)
+STALE = datetime.now(UTC) - timedelta(days=3)
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +75,7 @@ def _make_bet(w: Warehouse, account: SportsbookAccount, num_legs: int = 1, **fie
         "cash_staked": Decimal("10.00"),
         "odds_american_placed": -150,
         "odds_decimal_placed": Decimal("1.6667"),
+        "placed_at": PLACED,
     }
     bet = w.bets.add(
         Bet(
@@ -80,7 +83,6 @@ def _make_bet(w: Warehouse, account: SportsbookAccount, num_legs: int = 1, **fie
             user_id=w.scope.user_id,
             id=uuid.uuid4(),
             sportsbook_account_id=account.id,
-            placed_at=PLACED,
             **(defaults | fields),  # type: ignore[arg-type]
         )
     )
@@ -432,3 +434,46 @@ def test_a_parlay_ticket_result_does_not_cascade_to_its_legs(data_dir: Path) -> 
 
     with _open_warehouse(data_dir) as w:
         assert [leg.result for leg in w.legs.for_bet(bet.id)] == [None, None]
+
+
+# ------------------------------------------------- stale default (SB-1521)
+
+
+def test_stale_bet_refuses_default_settled_at(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w), placed_at=STALE)
+
+    result = _settle(str(bet.id), "--result", "won")
+    assert isinstance(result.exception, UsageError)
+    assert "--settled-at" in (result.exception.remediation or "")
+
+    with _open_warehouse(data_dir) as w:
+        assert w.bets.get(bet.id).status != "settled"
+
+
+def test_stale_bet_accepts_explicit_settled_at(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w), placed_at=STALE)
+
+    at = (STALE + timedelta(hours=3)).isoformat()
+    result = _settle(str(bet.id), "--result", "won", "--settled-at", at)
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        assert w.bets.get(bet.id).settled_at == datetime.fromisoformat(at)
+
+
+def test_stale_bet_accepts_settled_at_now(data_dir: Path) -> None:
+    runner.invoke(app, ["init"])
+    with _open_warehouse(data_dir) as w:
+        bet = _make_bet(w, _make_account(w), placed_at=STALE)
+
+    before = datetime.now(UTC)
+    result = _settle(str(bet.id), "--result", "lost", "--settled-at", "now")
+    assert result.exit_code == 0, result.output
+
+    with _open_warehouse(data_dir) as w:
+        settled_at = w.bets.get(bet.id).settled_at
+        assert settled_at is not None and settled_at >= before

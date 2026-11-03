@@ -9,7 +9,7 @@ bet-guard: synthetic-amounts
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Annotated
 from uuid import UUID
@@ -38,6 +38,11 @@ console = Console()
 
 TWO_PLACES = Decimal("0.01")
 
+# A bet placed longer ago than this is almost always being settled after the
+# fact (back-captured from a screenshot), so "now" would be the wrong day.
+# ``bet card`` buckets by settled_at, so the default must be asked for.
+STALE_AFTER = timedelta(hours=24)
+
 
 def _parse_return(raw: str) -> Decimal:
     try:
@@ -50,7 +55,7 @@ def _parse_return(raw: str) -> Decimal:
 
 
 def _parse_timestamp(raw: str | None) -> datetime:
-    if raw is None:
+    if raw is None or raw.strip().lower() == "now":
         return datetime.now(UTC)
     try:
         value = datetime.fromisoformat(raw)
@@ -60,6 +65,22 @@ def _parse_timestamp(raw: str | None) -> datetime:
             remediation="Use ISO 8601, e.g. 2026-09-08T19:30:00-04:00.",
         ) from exc
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _refuse_stale_default(bet: Bet, now: datetime | None = None) -> None:
+    """Refuse to default settled_at to now for a bet placed long ago.
+
+    ``bet card`` puts a bet on the day it settled. Settling a week-old slip
+    with the default lands it on today's row and scrambles the streak.
+    """
+    now = now or datetime.now(UTC)
+    if now - bet.placed_at > STALE_AFTER:
+        raise UsageError(
+            f"bet {bet.id} was placed {bet.placed_at:%Y-%m-%d}; "
+            "settling it now would date the result today.",
+            remediation="Pass --settled-at with when the game ended "
+            "(e.g. 2026-11-02T23:30:00-05:00), or --settled-at now if it really settled now.",
+        )
 
 
 def _parse_leg_result_spec(spec: str) -> tuple[int, str]:
@@ -175,7 +196,12 @@ def settle(
         str | None, typer.Option("--return", help="Override the computed amount returned.")
     ] = None,
     settled_at: Annotated[
-        str | None, typer.Option("--settled-at", help="ISO 8601 timestamp. Default: now.")
+        str | None,
+        typer.Option(
+            "--settled-at",
+            help="ISO 8601 timestamp, or 'now'. Default: now, but required when the bet "
+            "was placed more than 24h ago.",
+        ),
     ] = None,
     leg_result: Annotated[
         list[str] | None,
@@ -199,6 +225,9 @@ def settle(
             bet_uuid = UUID(bet_id)
         except ValueError as exc:
             raise UsageError(f"{bet_id!r} is not a valid bet id.") from exc
+
+        if settled_at is None:
+            _refuse_stale_default(backend.bet_detail(bet_uuid).bet)
 
         settled = backend.settle(
             SettleRequest(
