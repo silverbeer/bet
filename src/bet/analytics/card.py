@@ -106,6 +106,9 @@ class BestHit:
     label: str
     odds_american: int | None
     net: Decimal
+    # Every leg's selection, in slip order, when there is more than one.
+    # Empty for a single, and from an API that predates SB-1523.
+    legs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +246,7 @@ def _best(window: Sequence[SettledBet]) -> BestHit | None:
         label=selection_summary(legs),
         odds_american=odds if odds is not None else bet.odds_american_placed,
         net=bet.net_profit,
+        legs=tuple(leg.selection_name or "?" for leg in legs) if len(legs) > 1 else (),
     )
 
 
@@ -373,6 +377,7 @@ def card_to_dict(card: Card, *, share: bool = False) -> dict[str, Any]:
             "sport": card.best.sport,
             "label": card.best.label,
             "odds_american": card.best.odds_american,
+            "legs": list(card.best.legs),
         }
         if not share:
             best["net"] = card.best.net
@@ -476,6 +481,7 @@ def card_from_dict(data: Mapping[str, Any]) -> Card:
             label=str(best["label"]),
             odds_american=None if best["odds_american"] is None else int(best["odds_american"]),
             net=_decimal(best["net"]),
+            legs=tuple(str(leg) for leg in best.get("legs") or ()),
         ),
         pending_count=int(pending["count"]),
         pending_exposure=_decimal(pending["exposure"]),

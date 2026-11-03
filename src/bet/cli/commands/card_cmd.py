@@ -18,6 +18,7 @@ otherwise this machine's. Read-only.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sys
@@ -124,6 +125,14 @@ def card(
             include_void=options.include_void,
         )
         result = backend.card(query)
+        best = result.best
+        if best is not None and not best.legs and best.label.endswith(" more"):
+            # An API older than SB-1523 sends only "X +N more"; ask for the legs.
+            legs = backend.bet_detail(best.bet_id).legs
+            names = tuple(
+                leg.selection_name or "?" for leg in sorted(legs, key=lambda x: x.leg_order)
+            )
+            result = dataclasses.replace(result, best=dataclasses.replace(best, legs=names))
 
     if options.fmt is OutputFormat.JSON:
         json.dump(card_to_dict(result, share=share), sys.stdout, indent=2, default=_plain)

@@ -22,8 +22,10 @@ from typer.testing import CliRunner
 from bet.analytics.card import (
     MULTI,
     OTHER,
+    Card,
     Record,
     build_card,
+    card_from_dict,
     card_to_dict,
     outcome,
     record_of,
@@ -31,7 +33,7 @@ from bet.analytics.card import (
     sport_of,
     streak,
 )
-from bet.cli.card_render import money, odds, percent
+from bet.cli.card_render import card_panel, money, odds, percent
 from bet.cli.commands import list_cmd
 from bet.cli.commands.card_cmd import _zone
 from bet.cli.main import app
@@ -273,6 +275,50 @@ def test_best_hit_breaks_ties_by_later_settle_and_falls_back_to_placed_odds() ->
     assert card.best.odds_american == -110
     assert card.best.label == "Chiefs ML +1 more"
     assert card.best.net == Decimal("15.00")
+
+
+def test_best_hit_parlay_carries_every_leg_in_order() -> None:
+    win = _bet("won", returned="25.00", settled_at=_at(16))
+    legs = [
+        _leg(1, sport="NFL", selection_name="Swift 10+"),
+        _leg(2, sport="NFL", selection_name="Burden 30+"),
+        _leg(3, sport="NFL"),
+    ]
+    card = _card([(win, legs)])
+    assert card.best is not None
+    assert card.best.legs == ("Swift 10+", "Burden 30+", "?")
+    assert card_from_dict(json.loads(json.dumps(card_to_dict(card), default=str))) == card
+
+
+def test_best_hit_single_has_no_leg_list() -> None:
+    card = _card([_nfl(_bet("won", returned="25.00", settled_at=_at(16)))])
+    assert card.best is not None and card.best.legs == ()
+
+
+def test_best_hit_from_older_api_without_legs() -> None:
+    card = _card([_nfl(_bet("won", returned="25.00", settled_at=_at(16)))])
+    data = json.loads(json.dumps(card_to_dict(card), default=str))
+    del data["best"]["legs"]
+    rebuilt = card_from_dict(data)
+    assert rebuilt.best is not None and rebuilt.best.legs == ()
+
+
+def test_best_hit_renders_each_leg(tmp_path: Path) -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    win = _bet("won", returned="25.00", settled_at=_at(16))
+    legs = [
+        _leg(1, sport="NFL", selection_name="Swift 10+"),
+        _leg(2, sport="NFL", selection_name="[Over] Burden"),
+    ]
+    out = StringIO()
+    Console(file=out, width=72).print(card_panel(_card([(win, legs)]), emoji=False))
+    text = out.getvalue()
+    assert "2-leg parlay" in text
+    assert "• Swift 10+" in text and "• [Over] Burden" in text
+    assert "+1 more" not in text
 
 
 def test_best_hit_prefers_settled_odds() -> None:
@@ -539,6 +585,33 @@ def test_cli_export_refuses_json(seeded: Path, tmp_path: Path) -> None:
     result = runner.invoke(app, ["--format", "json", "card", "--export", str(tmp_path / "c.html")])
     assert isinstance(result.exception, UsageError)
     assert not (tmp_path / "c.html").exists()
+
+
+def test_cli_backfills_legs_an_older_api_left_out(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+    from types import SimpleNamespace
+
+    from bet.cli.backend import LocalBackend
+
+    real = LocalBackend.card
+
+    def old_api(self: LocalBackend, query: Any) -> Card:
+        card = real(self, query)
+        assert card.best is not None
+        best = dataclasses.replace(card.best, label="Swift 10+ +1 more", legs=())
+        return dataclasses.replace(card, best=best)
+
+    detail = SimpleNamespace(
+        legs=[_leg(2, selection_name="Burden 30+"), _leg(1, selection_name="Swift 10+")]
+    )
+    monkeypatch.setattr(LocalBackend, "card", old_api)
+    monkeypatch.setattr(LocalBackend, "bet_detail", lambda self, bet_id: detail)
+    result = runner.invoke(app, ["card"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.index("Swift 10+") < result.stdout.index("Burden 30+")
+    assert "2-leg parlay" in result.stdout
 
 
 def test_cli_json_keys_and_share(seeded: Path) -> None:

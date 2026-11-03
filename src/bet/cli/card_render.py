@@ -188,8 +188,8 @@ def _by_sport(card: Card, *, share: bool) -> Table:
 
 
 def _best(card: Card, *, share: bool) -> Group:
-    """The pick on one line, the price (and payout) beneath it, so a long
-    parlay label never has to be cut short to fit the numbers."""
+    """The pick, the price (and payout) beneath it. A parlay names every leg,
+    one per line, so the hit says what actually had to land (SB-1523)."""
     best = card.best
     assert best is not None
     price = Text("   ")
@@ -198,10 +198,19 @@ def _best(card: Card, *, share: bool) -> Group:
         price.append("  →  ")
         price.append(money(best.net, signed=True), style="bold green")
     pick = Text(f" {best.sport} · ", style="dim")
-    pick.append_text(Text(best.label, style="bold"))
+    pick.append_text(
+        Text(f"{len(best.legs)}-leg parlay" if best.legs else best.label, style="bold")
+    )
     pick.no_wrap = True
     pick.overflow = "ellipsis"
-    return Group(pick, price)
+    lines: list[RenderableType] = [pick]
+    for leg in best.legs:
+        line = Text("   • ", style="dim")
+        line.append_text(Text(leg))
+        line.no_wrap = True
+        line.overflow = "ellipsis"
+        lines.append(line)
+    return Group(*lines, price)
 
 
 def _balances(card: Card) -> Table:
