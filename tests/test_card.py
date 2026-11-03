@@ -527,6 +527,20 @@ def test_cli_share_shows_no_dollars(seeded: Path) -> None:
     assert "$" not in result.stdout
 
 
+def test_cli_export_writes_html_and_still_prints(seeded: Path, tmp_path: Path) -> None:
+    out = tmp_path / "card.html"
+    result = runner.invoke(app, ["card", "--export", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "RECORD" in result.stdout
+    assert "RECORD" in out.read_text(encoding="utf-8")
+
+
+def test_cli_export_refuses_json(seeded: Path, tmp_path: Path) -> None:
+    result = runner.invoke(app, ["--format", "json", "card", "--export", str(tmp_path / "c.html")])
+    assert isinstance(result.exception, UsageError)
+    assert not (tmp_path / "c.html").exists()
+
+
 def test_cli_json_keys_and_share(seeded: Path) -> None:
     full = _json("card")
     assert {"record", "by_day", "by_sport", "balances", "pending", "streak"} <= set(full)

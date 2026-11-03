@@ -3,7 +3,8 @@
 Record, net and ROI over the last ``--days`` local days by settle date, day by
 day and by sport, plus the streak, the best hit, pending exposure and account
 balances. ``--share`` hides every dollar amount so the card can be sent to
-friends without saying what rode on it.
+friends without saying what rode on it. ``--export`` also writes it, colour
+intact, as HTML or SVG (SB-1522).
 
 The global ``--sportsbook`` and ``--sport`` narrow the bets, and
 ``--sportsbook`` the balances too. ``--since``/``--until`` are refused: they
@@ -21,6 +22,7 @@ import json
 import os
 import sys
 from datetime import datetime, tzinfo
+from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -28,7 +30,7 @@ import typer
 
 from bet.analytics.card import card_to_dict
 from bet.cli.backend import open_backend
-from bet.cli.card_render import render_card
+from bet.cli.card_render import export_card, render_card
 from bet.cli.context import options_from
 from bet.cli.output import _plain
 from bet.config import OutputFormat, resolve
@@ -83,6 +85,14 @@ def card(
         bool,
         typer.Option("--share", help="Hide every dollar amount, for sending to friends."),
     ] = False,
+    export: Annotated[
+        Path | None,
+        typer.Option(
+            "--export",
+            help="Also write the card, in colour, to this .html or .svg file.",
+            dir_okay=False,
+        ),
+    ] = None,
 ) -> None:
     """Shareable summary of recent betting."""
     options = options_from(ctx)
@@ -90,6 +100,11 @@ def card(
         raise UsageError(
             "card window is --days, by settle date; --since/--until do not apply.",
             remediation="Use `bet card --days N` to choose how many days to cover.",
+        )
+    if export is not None and options.fmt is OutputFormat.JSON:
+        raise UsageError(
+            "--export writes the rendered card; --format json has nothing to render.",
+            remediation="Drop --format json to export.",
         )
     if options.fmt is OutputFormat.CSV:
         raise UsageError(
@@ -115,6 +130,9 @@ def card(
         sys.stdout.write("\n")
         return
     render_card(result, share=share)
+    if export is not None:
+        written = export_card(result, export, share=share)
+        sys.stderr.write(f"card written to {written}\n")
 
 
 __all__ = ["card"]

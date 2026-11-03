@@ -14,6 +14,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from io import StringIO
+from pathlib import Path
 from typing import TextIO
 
 from rich import box
@@ -21,9 +23,11 @@ from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
+from rich.terminal_theme import SVG_EXPORT_THEME
 from rich.text import Text
 
 from bet.analytics.card import Card, DayRow, Record
+from bet.errors import UsageError
 
 MAX_WIDTH = 72
 # A 3/4-height block leaves a sliver of background between rows, so a run
@@ -258,4 +262,41 @@ def render_card(card: Card, *, share: bool = False, stream: TextIO | None = None
     console.print(card_panel(card, share=share, emoji=emoji))
 
 
-__all__ = ["BAR", "MAX_WIDTH", "card_panel", "money", "odds", "percent", "render_card"]
+EXPORT_SUFFIXES = (".html", ".svg")
+
+
+def export_card(card: Card, path: Path, *, share: bool = False) -> Path:
+    """Write the card, colours and all, as HTML or SVG -- chosen by ``path``'s suffix.
+
+    The terminal is the only place rich's colour survives; a file carries it
+    to a browser, a chat or a friend. Same panel, same width, but no emoji:
+    a browser draws the flame wider than the two cells rich budgets for it,
+    which knocks the panel's right border out of line.
+    """
+    suffix = path.suffix.lower()
+    if suffix not in EXPORT_SUFFIXES:
+        raise UsageError(
+            f"cannot export the card as {path.name!r}.",
+            remediation=f"Use a path ending in {' or '.join(EXPORT_SUFFIXES)}.",
+        )
+    console = Console(file=StringIO(), record=True, width=MAX_WIDTH, force_terminal=True)
+    console.print(card_panel(card, share=share, emoji=False))
+    if suffix == ".svg":
+        content = console.export_svg(title="bet card", theme=SVG_EXPORT_THEME)
+    else:
+        content = console.export_html(theme=SVG_EXPORT_THEME, inline_styles=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+__all__ = [
+    "BAR",
+    "EXPORT_SUFFIXES",
+    "MAX_WIDTH",
+    "card_panel",
+    "export_card",
+    "money",
+    "odds",
+    "percent",
+    "render_card",
+]
