@@ -11,6 +11,7 @@ import time
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -22,8 +23,9 @@ from bet.analytics.card import (
     card_to_dict,
     window_bounds,
 )
-from bet.cli.card_render import BAR, FIRE, card_panel, render_card
+from bet.cli.card_render import BAR, FIRE, card_panel, export_card, render_card
 from bet.cli.commands import card_cmd
+from bet.errors import UsageError
 from bet.models.balance import BalanceSnapshot, CashFlow
 from bet.models.bet import Bet, BetLeg
 
@@ -431,3 +433,35 @@ class TestMachineZone:
     def test_stored_utc_defers_to_the_machine(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TZ", "Europe/London")
         assert getattr(card_cmd._zone("UTC"), "key", None) == "Europe/London"
+
+
+class TestExport:
+    """SB-1522: the card as a colour file."""
+
+    def _card(self) -> Card:
+        at = datetime(2026, 10, 19, 15, 0, tzinfo=UTC)
+        return _card([_row(_bet("won", at)), _row(_bet("lost", at))])
+
+    def test_html_keeps_colour_and_text(self, tmp_path: Path) -> None:
+        out = export_card(self._card(), tmp_path / "card.html")
+        html = out.read_text(encoding="utf-8")
+        assert html.lstrip().lower().startswith("<!doctype html")
+        assert "BET CARD" in html
+        assert "color:" in html  # inline styles, so the file stands alone
+
+    def test_svg(self, tmp_path: Path) -> None:
+        svg = export_card(self._card(), tmp_path / "card.SVG").read_text(encoding="utf-8")
+        assert svg.lstrip().startswith("<svg")
+
+    def test_unknown_suffix_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(UsageError):
+            export_card(self._card(), tmp_path / "card.png")
+        assert not (tmp_path / "card.png").exists()
+
+    def test_share_hides_money_in_export(self, tmp_path: Path) -> None:
+        shown = export_card(self._card(), tmp_path / "a.html").read_text(encoding="utf-8")
+        hidden = export_card(self._card(), tmp_path / "b.html", share=True).read_text(
+            encoding="utf-8"
+        )
+        assert "$" in shown
+        assert "$" not in hidden
